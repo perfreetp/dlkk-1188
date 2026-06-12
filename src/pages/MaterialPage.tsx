@@ -24,6 +24,7 @@ function MaterialPage() {
   const [exportProgress, setExportProgress] = useState(0)
   const [exportStatus, setExportStatus] = useState('')
   const [exportResult, setExportResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(new Set())
 
   const allTags = useMemo(() => {
     const tags = new Set<string>()
@@ -45,6 +46,38 @@ function MaterialPage() {
 
   const favoriteCount = meeting.clips.filter(c => c.isFavorite).length
   const totalDuration = meeting.clips.reduce((s, c) => s + (c.endTime - c.startTime), 0)
+
+  const toggleClipSelection = (clipId: string) => {
+    setSelectedClipIds(prev => {
+      const next = new Set(prev)
+      if (next.has(clipId)) {
+        next.delete(clipId)
+      } else {
+        next.add(clipId)
+      }
+      return next
+    })
+  }
+
+  const selectAllVisible = () => {
+    setSelectedClipIds(prev => {
+      const next = new Set(prev)
+      filteredClips.forEach(c => next.add(c.id))
+      return next
+    })
+  }
+
+  const deselectAllVisible = () => {
+    setSelectedClipIds(prev => {
+      const next = new Set(prev)
+      filteredClips.forEach(c => next.delete(c.id))
+      return next
+    })
+  }
+
+  const clearSelection = () => {
+    setSelectedClipIds(new Set())
+  }
 
   const getSelectedItemsCount = () => {
     let n = 0
@@ -71,7 +104,11 @@ function MaterialPage() {
 
       setExportStatus('正在生成资料包...')
       setExportProgress(25)
-      const zipBuffer = await buildExportZip(meeting, exportOptions)
+      const finalOptions: ExportOptions = {
+        ...exportOptions,
+        selectedClipIds: selectedClipIds.size > 0 ? Array.from(selectedClipIds) : undefined
+      }
+      const zipBuffer = await buildExportZip(meeting, finalOptions)
 
       setExportStatus('正在选择保存位置...')
       setExportProgress(60)
@@ -177,8 +214,8 @@ function MaterialPage() {
           <div className="stat-value" style={{ color: '#f59e0b' }}>⭐ {favoriteCount}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">素材总时长</div>
-          <div className="stat-value">{formatDuration(totalDuration)}</div>
+          <div className="stat-label">已勾选</div>
+          <div className="stat-value" style={{ color: selectedClipIds.size > 0 ? '#6366f1' : '#1e293b' }}>☑️ {selectedClipIds.size}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">标签数</div>
@@ -203,6 +240,17 @@ function MaterialPage() {
               onClick={() => { setFilter('tag'); setSelectedTag(tag) }}
             >🏷️ {tag}</button>
           ))}
+          <div style={{ marginLeft: 12, display: 'flex', gap: 6, borderLeft: '1px solid #e2e8f0', paddingLeft: 12 }}>
+            <button className="btn btn-outline btn-sm" onClick={selectAllVisible} title="全选当前筛选结果">
+              ☑️ 全选当前
+            </button>
+            <button className="btn btn-outline btn-sm" onClick={deselectAllVisible} title="取消当前筛选结果的勾选">
+              ⬜ 取消当前
+            </button>
+            <button className="btn btn-outline btn-sm" onClick={clearSelection} title="清空所有勾选">
+              清空勾选
+            </button>
+          </div>
         </div>
         <div className="action-bar-right">
           <div style={{ width: 220 }}>
@@ -242,8 +290,10 @@ function MaterialPage() {
             <ClipCard
               key={clip.id}
               clip={clip}
+              isSelected={selectedClipIds.has(clip.id)}
               onToggleFavorite={() => toggleFavorite(clip.id)}
               onDelete={() => deleteClip(clip.id)}
+              onToggleSelect={() => toggleClipSelection(clip.id)}
             />
           ))}
         </div>
@@ -350,9 +400,13 @@ function MaterialPage() {
                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <div>
                         <div style={{ fontWeight: 500, color: '#1e293b' }}>📑 素材片段索引与文本</div>
-                        <div style={{ fontSize: 12, color: '#64748b' }}>导出片段的 Markdown 索引和完整文本内容</div>
+                        <div style={{ fontSize: 12, color: '#64748b' }}>
+                          {selectedClipIds.size > 0
+                            ? `已勾选 ${selectedClipIds.size} 个片段，将仅导出选中内容`
+                            : '导出片段的 Markdown 索引和完整文本内容，每个片段单独文件'}
+                        </div>
                       </div>
-                      {exportOptions.clips && (
+                      {exportOptions.clips && selectedClipIds.size === 0 && (
                         <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 10, fontSize: 13, color: '#64748b', whiteSpace: 'nowrap' }}>
                           <input
                             type="checkbox"
@@ -361,6 +415,9 @@ function MaterialPage() {
                           />
                           仅收藏（{favoriteCount}）
                         </label>
+                      )}
+                      {selectedClipIds.size > 0 && (
+                        <span className="tag tag-primary" style={{ marginLeft: 10 }}>☑️ {selectedClipIds.size} 个</span>
                       )}
                     </div>
                   </label>
@@ -383,16 +440,27 @@ function MaterialPage() {
   )
 }
 
-function ClipCard({ clip, onToggleFavorite, onDelete }: {
+function ClipCard({ clip, isSelected, onToggleFavorite, onDelete, onToggleSelect }: {
   clip: Clip
+  isSelected: boolean
   onToggleFavorite: () => void
   onDelete: () => void
+  onToggleSelect: () => void
 }) {
   const [showConfirm, setShowConfirm] = useState(false)
   return (
-    <div className="clip-card">
+    <div className="clip-card" style={{ border: isSelected ? '2px solid #6366f1' : undefined, background: isSelected ? '#eef2ff' : undefined }}>
       <div className="clip-header">
-        <div className="clip-name" title={clip.name}>{clip.name}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={onToggleSelect}
+            style={{ width: 18, height: 18, cursor: 'pointer' }}
+            title="勾选此片段用于导出"
+          />
+          <div className="clip-name" title={clip.name} style={{ flex: 1 }}>{clip.name}</div>
+        </div>
         <div className="clip-actions">
           <button
             className={`clip-icon-btn ${clip.isFavorite ? 'active' : ''}`}

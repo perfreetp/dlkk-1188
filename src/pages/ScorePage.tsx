@@ -1,7 +1,9 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useMeeting } from '../store/MeetingContext'
-import { getScoreLevel, formatDuration, formatDate } from '../utils'
+import { getScoreLevel, formatDuration, formatDate, formatTimeRange } from '../utils'
 import { Meeting } from '../types'
+
+type CompareTab = 'scores' | 'speakers' | 'interruptions'
 
 function ScorePage() {
   const {
@@ -13,6 +15,8 @@ function ScorePage() {
   const [editingScore, setEditingScore] = useState<{ id: string; score: number; comment: string } | null>(null)
   const [objectiveState, setObjectiveState] = useState<boolean[]>(() => meeting.objectives.map(() => true))
   const [showHistorySelector, setShowHistorySelector] = useState(false)
+  const [compareMeetingIds, setCompareMeetingIds] = useState<Set<string>>(new Set())
+  const [compareTab, setCompareTab] = useState<CompareTab>('scores')
 
   useEffect(() => {
     setObjectiveState(meeting.objectives.map(() => true))
@@ -20,22 +24,46 @@ function ScorePage() {
 
   const { level, desc } = getScoreLevel(meeting.score.overall)
 
-  const historyForCompare: Meeting[] = useMemo(() => {
-    const currentIdx = allHistoryMeetings.findIndex(m => m.id === meeting.id)
-    const withoutCurrent = allHistoryMeetings.filter(m => m.id !== meeting.id)
-    const recentOthers = withoutCurrent.slice(Math.max(0, withoutCurrent.length - 3))
-    const list = [...recentOthers]
-    if (currentIdx >= 0 || !list.find(m => m.id === meeting.id)) {
-      list.push(meeting)
+  const toggleCompareMeeting = (id: string) => {
+    setCompareMeetingIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        if (next.size >= 3) {
+          alert('最多选择 3 场会议进行对比')
+          return prev
+        }
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const compareMeetings: Meeting[] = useMemo(() => {
+    const list: Meeting[] = []
+    if (compareMeetingIds.size === 0) {
+      const currentIdx = allHistoryMeetings.findIndex(m => m.id === meeting.id)
+      const withoutCurrent = allHistoryMeetings.filter(m => m.id !== meeting.id)
+      const recentOthers = withoutCurrent.slice(Math.max(0, withoutCurrent.length - 2))
+      list.push(...recentOthers)
+      if (currentIdx >= 0 || !list.find(m => m.id === meeting.id)) {
+        list.push(meeting)
+      }
+    } else {
+      allHistoryMeetings.forEach(m => {
+        if (compareMeetingIds.has(m.id)) list.push(m)
+      })
+      if (!list.find(m => m.id === meeting.id)) list.push(meeting)
     }
     return list.sort((a, b) => (a.date || '').localeCompare(b.date || ''))
-  }, [meeting, allHistoryMeetings])
+  }, [meeting, allHistoryMeetings, compareMeetingIds])
 
-  const bestScore = Math.max(...historyForCompare.map(d => d.score?.overall || 0))
-  const avgScore = historyForCompare.length > 0
-    ? Math.round(historyForCompare.reduce((s, d) => s + (d.score?.overall || 0), 0) / historyForCompare.length)
+  const bestScore = Math.max(...compareMeetings.map(d => d.score?.overall || 0))
+  const avgScore = compareMeetings.length > 0
+    ? Math.round(compareMeetings.reduce((s, d) => s + (d.score?.overall || 0), 0) / compareMeetings.length)
     : 0
-  const isBest = meeting.score.overall >= bestScore && historyForCompare.length > 1
+  const isBest = meeting.score.overall >= bestScore && compareMeetings.length > 1
 
   const objectiveProgress = objectiveState.filter(Boolean).length
 
@@ -46,6 +74,76 @@ function ScorePage() {
     if (pct >= 0.6) return '#f59e0b'
     return '#ef4444'
   }
+
+  const getMeetingStats = (m: Meeting) => {
+    const totalDuration = m.transcripts.length > 0 ? m.transcripts[m.transcripts.length - 1].endTime : 0
+    const interruptionCount = m.transcripts.filter(t => t.isInterruption).length
+    const silenceDuration = m.transcripts.filter(t => t.isSilence).reduce((s, t) => s + (t.endTime - t.startTime), 0)
+    const speakerStats = new Map<string, number>()
+    m.transcripts.forEach(t => {
+      if (t.isSilence) return
+      const current = speakerStats.get(t.speakerId) || 0
+      speakerStats.set(t.speakerId, current + (t.endTime - t.startTime))
+    })
+    const totalSpeak = Array.from(speakerStats.values()).reduce((s, v) => s + v, 0)
+    return { totalDuration, interruptionCount, silenceDuration, speakerStats, totalSpeak }
+  }
+
+  const previousMeeting = compareMeetings.length >= 2
+    ? compareMeetings[compareMeetings.length - 2]
+    : null
+
+  const calculateImprovements = () => {
+    if (!previousMeeting) return null
+    const currentStats = getMeetingStats(meeting)
+    const prevStats = getMeetingStats(previousMeeting)
+    const scoreDiff = (meeting.score?.overall || 0) - (previousMeeting.score?.overall || 0)
+    const interruptionDiff = currentStats.interruptionCount - prevStats.interruptionCount
+    const silenceDiff = currentStats.silenceDuration - prevStats.silenceDuration
+
+    const improvements: { category: string; current: number; prev: number; diff: number; unit: string; isBetter: boolean }[] = []
+    improvements.push({
+      category: '综合评分',
+      current: meeting.score?.overall || 0,
+      prev: previousMeeting.score?.overall || 0,
+      diff: scoreDiff,
+      unit: '分',
+      isBetter: scoreDiff >= 0
+    })
+    meeting.score.items.forEach(item => {
+      const prevItem = previousMeeting.score.items.find(p => p.id === item.id)
+      if (prevItem) {
+        const diff = item.score - prevItem.score
+        improvements.push({
+          category: item.name,
+          current: item.score,
+          prev: prevItem.score,
+          diff,
+          unit: '分',
+          isBetter: diff >= 0
+        })
+      }
+    })
+    improvements.push({
+      category: '打断次数',
+      current: currentStats.interruptionCount,
+      prev: prevStats.interruptionCount,
+      diff: interruptionDiff,
+      unit: '次',
+      isBetter: interruptionDiff <= 0
+    })
+    improvements.push({
+      category: '沉默时长',
+      current: currentStats.silenceDuration,
+      prev: prevStats.silenceDuration,
+      diff: silenceDiff,
+      unit: '秒',
+      isBetter: silenceDiff <= 0
+    })
+    return improvements
+  }
+
+  const improvements = calculateImprovements()
 
   const handleScoreChange = (id: string, delta: number) => {
     setMeeting(prev => {
@@ -102,6 +200,8 @@ function ScorePage() {
     setEditingScore(null)
   }
 
+  const COLORS = ['#6366f1', '#ec4899', '#14b8a6', '#f59e0b']
+
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -136,10 +236,14 @@ function ScorePage() {
         <div className="card" style={{ marginTop: 16, marginBottom: 20 }}>
           <div className="card-header" style={{ marginBottom: 12 }}>
             <h2 className="card-title">🕒 选择要查看/对比的会议（共 {allHistoryMeetings.length} 个）</h2>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+              💡 点击卡片切换当前会议，☑️ 勾选可用于多会议对比（最多选 3 场），当前已选 {compareMeetingIds.size} 场
+            </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 10 }}>
             {allHistoryMeetings.map(m => {
               const isCurrent = m.id === meeting.id
+              const isSelected = compareMeetingIds.has(m.id)
               return (
                 <div
                   key={m.id}
@@ -148,14 +252,25 @@ function ScorePage() {
                   }}
                   style={{
                     padding: 12, borderRadius: 8, cursor: 'pointer',
-                    border: isCurrent ? '2px solid #6366f1' : '1px solid #e2e8f0',
-                    background: isCurrent ? '#eef2ff' : '#fff',
+                    border: isCurrent ? '2px solid #6366f1' : isSelected ? '2px solid #8b5cf6' : '1px solid #e2e8f0',
+                    background: isCurrent ? '#eef2ff' : isSelected ? '#f5f3ff' : '#fff',
                     transition: 'all 0.2s'
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={m.title}>
-                      {m.title || '未命名会议'}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={(e) => {
+                          e.stopPropagation()
+                          toggleCompareMeeting(m.id)
+                        }}
+                        style={{ width: 16, height: 16 }}
+                      />
+                      <div style={{ fontWeight: 600, fontSize: 14, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={m.title}>
+                        {m.title || '未命名会议'}
+                      </div>
                     </div>
                     {isCurrent && <span className="tag tag-primary" style={{ marginLeft: 6, fontSize: 11 }}>当前</span>}
                   </div>
@@ -169,6 +284,13 @@ function ScorePage() {
               )
             })}
           </div>
+          {compareMeetingIds.size > 0 && (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e2e8f0', textAlign: 'right' }}>
+              <button className="btn btn-outline btn-sm" onClick={() => setCompareMeetingIds(new Set())}>
+                清空对比选择
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -200,8 +322,8 @@ function ScorePage() {
               <div style={{ fontSize: 20, fontWeight: 600, color: '#6366f1' }}>{objectiveProgress}/{meeting.objectives.length}</div>
             </div>
             <div>
-              <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>历史会议数</div>
-              <div style={{ fontSize: 20, fontWeight: 600, color: '#1e293b' }}>{allHistoryMeetings.length}</div>
+              <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>对比会议</div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: '#1e293b' }}>{compareMeetings.length} 场</div>
             </div>
           </div>
         </div>
@@ -220,6 +342,41 @@ function ScorePage() {
           )
         })}
       </div>
+
+      {improvements && compareMeetings.length >= 2 && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="card-header">
+            <h2 className="card-title">📈 相比上一场「{previousMeeting?.title || '上一场会议'}」变化分析</h2>
+            <span className="tag tag-info">{compareMeetings.length} 场会议对比</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
+            {improvements.map((imp, idx) => (
+              <div
+                key={imp.category}
+                style={{
+                  padding: 14, borderRadius: 10,
+                  background: imp.isBetter ? '#f0fdf4' : '#fef2f2',
+                  border: `1px solid ${imp.isBetter ? '#bbf7d0' : '#fecaca'}`
+                }}
+              >
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>{imp.category}</div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: imp.isBetter ? '#15803d' : '#b91c1c' }}>
+                    {imp.category === '沉默时长' ? formatDuration(imp.current) : imp.current}
+                  </div>
+                  <div style={{ fontSize: 13, color: imp.isBetter ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
+                    {imp.diff >= 0 ? '+' : ''}{imp.category === '沉默时长' ? formatDuration(imp.diff) : `${imp.diff}${imp.unit}`}
+                    {imp.isBetter ? ' ✅' : ' ⚠️'}
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                  上一场：{imp.category === '沉默时长' ? formatDuration(imp.prev) : `${imp.prev}${imp.unit}`}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="two-column">
         <div className="card">
@@ -308,40 +465,220 @@ function ScorePage() {
       </div>
 
       <div className="card" style={{ marginTop: 20 }}>
-        <div className="card-header">
-          <h2 className="card-title">📈 历史表现对比</h2>
-          <span className="tag tag-info">共 {historyForCompare.length} 次会议</span>
+        <div className="card-header" style={{ flexWrap: 'wrap', gap: 12 }}>
+          <h2 className="card-title">📊 多会议对比分析</h2>
+          <div style={{ display: 'flex', gap: 4, background: '#f1f5f9', padding: 4, borderRadius: 8 }}>
+            {[
+              { key: 'scores', label: '📈 评分维度对比' },
+              { key: 'speakers', label: '👥 发言占比对比' },
+              { key: 'interruptions', label: '⚠️ 打断/沉默对比' }
+            ].map(tab => (
+              <button
+                key={tab.key}
+                className={`btn ${compareTab === tab.key ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+                onClick={() => setCompareTab(tab.key as CompareTab)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <span className="tag tag-info">共 {compareMeetings.length} 场会议</span>
         </div>
 
-        {historyForCompare.length < 2 ? (
+        {compareMeetings.length < 2 ? (
           <div className="empty-state">
             <div className="empty-icon">📊</div>
             <div className="empty-title">暂无足够的历史对比数据</div>
-            <div className="empty-desc">分析并保存 2 个以上会议后，将在这里显示多会议对比图表</div>
+            <div className="empty-desc">分析并保存 2 个以上会议后，或在上方勾选要对比的会议，将在这里显示多维度对比</div>
           </div>
         ) : (
           <>
-            <div className="history-compare">
-              {historyForCompare.map(d => (
-                <div key={d.id} className="history-bar-item">
-                  <div
-                    className={`history-bar ${d.id === meeting.id ? 'current' : ''}`}
-                    style={{ height: `${((d.score?.overall || 0) / 100) * 180 + 40}px` }}
-                    title={`${d.title}：${d.score?.overall || 0} 分`}
-                  >
-                    <strong>{d.score?.overall || 0}</strong>
-                  </div>
-                  <div className="history-bar-label">
-                    <div style={{ fontWeight: d.id === meeting.id ? 600 : 400, color: d.id === meeting.id ? '#6366f1' : '#475569' }}>
-                      {d.id === meeting.id ? '本次' : formatDate(d.date || '').slice(5)}
+            {compareTab === 'scores' && (
+              <>
+                <div className="history-compare" style={{ marginBottom: 24 }}>
+                  {compareMeetings.map((d, di) => (
+                    <div key={d.id} className="history-bar-item">
+                      <div
+                        className={`history-bar ${d.id === meeting.id ? 'current' : ''}`}
+                        style={{
+                          height: `${((d.score?.overall || 0) / 100) * 180 + 40}px`,
+                          background: d.id === meeting.id ? 'linear-gradient(180deg, #6366f1, #4f46e5)' : `linear-gradient(180deg, ${COLORS[di % COLORS.length]}, ${COLORS[(di + 1) % COLORS.length]})`
+                        }}
+                        title={`${d.title}：${d.score?.overall || 0} 分`}
+                      >
+                        <strong>{d.score?.overall || 0}</strong>
+                      </div>
+                      <div className="history-bar-label">
+                        <div style={{ fontWeight: d.id === meeting.id ? 600 : 400, color: d.id === meeting.id ? '#6366f1' : '#475569' }}>
+                          {d.id === meeting.id ? '本次' : formatDate(d.date || '').slice(5)}
+                        </div>
+                        <div style={{ fontSize: 11, marginTop: 2, color: '#94a3b8' }}>{(d.title || '未命名').slice(0, 6)}...</div>
+                      </div>
                     </div>
-                    <div style={{ fontSize: 11, marginTop: 2, color: '#94a3b8' }}>{(d.title || '未命名').slice(0, 6)}...</div>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
 
-            <div style={{ overflowX: 'auto' }}>
+                <div style={{ overflowX: 'auto', marginBottom: 16 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
+                    <thead>
+                      <tr style={{ background: '#f8fafc' }}>
+                        <th style={{ textAlign: 'left', padding: '10px 14px', fontSize: 13, fontWeight: 600, color: '#475569', minWidth: 100 }}>评分维度</th>
+                        {compareMeetings.map(m => (
+                          <th key={m.id} style={{ textAlign: 'center', padding: '10px 14px', fontSize: 13, fontWeight: 600, color: m.id === meeting.id ? '#6366f1' : '#475569', minWidth: 90 }}>
+                            {m.id === meeting.id ? '本次' : (m.title || '未命名').slice(0, 6)}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr style={{ borderBottom: '2px solid #e2e8f0', background: '#fafafa' }}>
+                        <td style={{ padding: '10px 14px', fontSize: 14, fontWeight: 600 }}>综合评分</td>
+                        {compareMeetings.map(m => (
+                          <td key={m.id} style={{ textAlign: 'center', padding: '10px 14px', fontSize: 16, fontWeight: 700, color: getScoreColor(m.score?.overall || 0, 100) }}>
+                            {m.score?.overall || 0}
+                          </td>
+                        ))}
+                      </tr>
+                      {meeting.score.items.map(item => {
+                        const maxVal = Math.max(...compareMeetings.map(m => m.score.items.find(i => i.id === item.id)?.score || 0))
+                        return (
+                          <tr key={item.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '10px 14px', fontSize: 14 }}>{item.name}</td>
+                            {compareMeetings.map(m => {
+                              const s = m.score.items.find(i => i.id === item.id)
+                              const val = s?.score || 0
+                              const isMax = val === maxVal && maxVal > 0
+                              const barWidth = maxVal > 0 ? (val / maxVal) * 80 : 0
+                              return (
+                                <td key={m.id} style={{ textAlign: 'center', padding: '10px 14px', fontSize: 14, fontWeight: isMax ? 700 : 400, color: isMax ? '#15803d' : '#475569' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <div style={{ width: barWidth + '%', height: 6, borderRadius: 3, background: isMax ? '#22c55e' : '#cbd5e1', minWidth: 4 }} />
+                                    <span>{val}{isMax && ' ★'}</span>
+                                  </div>
+                                </td>
+                              )
+                            })}
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+
+            {compareTab === 'speakers' && (
+              <div>
+                {compareMeetings.map((m, mi) => {
+                  const stats = getMeetingStats(m)
+                  return (
+                    <div key={m.id} className="card" style={{ marginBottom: 12, background: mi === compareMeetings.length - 1 ? '#eef2ff' : '#fff' }}>
+                      <div className="card-header">
+                        <h3 style={{ margin: 0, fontSize: 15 }}>
+                          {m.id === meeting.id ? '📌 本次' : '📅'} {m.title}
+                          <span style={{ marginLeft: 8, fontSize: 12, color: '#94a3b8', fontWeight: 400 }}>{m.date}</span>
+                        </h3>
+                      </div>
+                      <div style={{ padding: '0 16px 16px' }}>
+                        {m.speakers.length === 0 ? (
+                          <div style={{ color: '#94a3b8', fontSize: 13 }}>暂无发言人数据</div>
+                        ) : (
+                          m.speakers.map(s => {
+                            const duration = stats.speakerStats.get(s.id) || 0
+                            const percent = stats.totalSpeak > 0 ? (duration / stats.totalSpeak) * 100 : 0
+                            return (
+                              <div key={s.id} className="speaker-stat">
+                                <div className="speaker-avatar" style={{ background: s.color }}>
+                                  {s.name.slice(0, 1)}
+                                </div>
+                                <div className="speaker-info">
+                                  <div className="speaker-name">{s.name}</div>
+                                  <div className="speaker-role">{s.role || '未设置'}</div>
+                                </div>
+                                <div className="speaker-duration">
+                                  <div className="speaker-duration-value">{formatDuration(duration)} ({percent.toFixed(1)}%)</div>
+                                  <div className="speaker-duration-bar">
+                                    <div className="speaker-duration-fill" style={{ width: `${percent}%`, background: s.color }} />
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {compareTab === 'interruptions' && (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc' }}>
+                      <th style={{ textAlign: 'left', padding: '10px 14px', fontSize: 13, fontWeight: 600, color: '#475569' }}>会议</th>
+                      <th style={{ textAlign: 'center', padding: '10px 14px', fontSize: 13, fontWeight: 600, color: '#475569' }}>总时长</th>
+                      <th style={{ textAlign: 'center', padding: '10px 14px', fontSize: 13, fontWeight: 600, color: '#475569' }}>打断次数</th>
+                      <th style={{ textAlign: 'center', padding: '10px 14px', fontSize: 13, fontWeight: 600, color: '#475569' }}>沉默时长</th>
+                      <th style={{ textAlign: 'center', padding: '10px 14px', fontSize: 13, fontWeight: 600, color: '#475569' }}>沉默占比</th>
+                      <th style={{ textAlign: 'center', padding: '10px 14px', fontSize: 13, fontWeight: 600, color: '#475569' }}>综合评分</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {compareMeetings.map(m => {
+                      const stats = getMeetingStats(m)
+                      const silenceRatio = stats.totalDuration > 0 ? ((stats.silenceDuration / stats.totalDuration) * 100).toFixed(1) : '0'
+                      const interruptionColor = stats.interruptionCount > 3 ? '#ef4444' : stats.interruptionCount > 1 ? '#f59e0b' : '#22c55e'
+                      const silenceColor = parseFloat(silenceRatio) > 10 ? '#f59e0b' : '#22c55e'
+                      return (
+                        <tr key={m.id} style={{ borderBottom: '1px solid #f1f5f9', background: m.id === meeting.id ? '#eef2ff' : 'transparent' }}>
+                          <td style={{ padding: '10px 14px', fontSize: 14, fontWeight: m.id === meeting.id ? 600 : 400 }}>
+                            {m.id === meeting.id ? '📌 ' : ''}{m.title || '未命名会议'}
+                          </td>
+                          <td style={{ textAlign: 'center', padding: '10px 14px', fontSize: 14, color: '#64748b' }}>{formatDuration(stats.totalDuration)}</td>
+                          <td style={{ textAlign: 'center', padding: '10px 14px', fontSize: 14, fontWeight: 600, color: interruptionColor }}>
+                            {stats.interruptionCount} 次
+                            {stats.interruptionCount > 3 && ' ⚠️'}
+                          </td>
+                          <td style={{ textAlign: 'center', padding: '10px 14px', fontSize: 14, color: silenceColor }}>{formatDuration(stats.silenceDuration)}</td>
+                          <td style={{ textAlign: 'center', padding: '10px 14px', fontSize: 14, fontWeight: 600, color: silenceColor }}>{silenceRatio}%</td>
+                          <td style={{ textAlign: 'center', padding: '10px 14px', fontSize: 14, fontWeight: 600, color: getScoreColor(m.score?.overall || 0, 100) }}>
+                            {m.score?.overall || 0}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                {compareMeetings.length >= 2 && (
+                  <div style={{ marginTop: 16, padding: 16, background: '#f8fafc', borderRadius: 10 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#1e293b', marginBottom: 8 }}>💡 趋势分析</div>
+                    <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.8 }}>
+                      {compareMeetings.length >= 2 && (() => {
+                        const first = getMeetingStats(compareMeetings[0])
+                        const last = getMeetingStats(compareMeetings[compareMeetings.length - 1])
+                        const trend = []
+                        if (last.interruptionCount < first.interruptionCount) {
+                          trend.push(`✅ 打断次数从 ${first.interruptionCount} 次减少到 ${last.interruptionCount} 次，沟通秩序有所改善`)
+                        } else if (last.interruptionCount > first.interruptionCount) {
+                          trend.push(`⚠️ 打断次数从 ${first.interruptionCount} 次增加到 ${last.interruptionCount} 次，建议关注会议秩序`)
+                        }
+                        if (last.silenceDuration < first.silenceDuration) {
+                          trend.push(`✅ 沉默时长从 ${formatDuration(first.silenceDuration)} 减少到 ${formatDuration(last.silenceDuration)}，沟通效率提升`)
+                        } else if (last.silenceDuration > first.silenceDuration) {
+                          trend.push(`⚠️ 沉默时长从 ${formatDuration(first.silenceDuration)} 增加到 ${formatDuration(last.silenceDuration)}，建议加强互动`)
+                        }
+                        if (trend.length === 0) trend.push('ℹ️ 各项指标保持稳定，继续保持')
+                        return trend.map((t, i) => <div key={i}>• {t}</div>)
+                      })()}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div style={{ marginTop: 20, overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr style={{ background: '#f8fafc' }}>
@@ -355,7 +692,7 @@ function ScorePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {historyForCompare.map(d => {
+                  {compareMeetings.map(d => {
                     const diff = (d.score?.overall || 0) - avgScore
                     const isCurrent = d.id === meeting.id
                     return (

@@ -49,7 +49,7 @@ function InputPage() {
     setMeeting(prev => ({
       ...prev,
       mediaFile: file,
-      title: prev.title || name.replace(/\.[^.]+$/, '')
+      title: name.replace(/\.[^.]+$/, '')
     }))
   }
 
@@ -71,7 +71,7 @@ function InputPage() {
       setMeeting(prev => ({
         ...prev,
         mediaFile,
-        title: prev.title || file.name.replace(/\.[^.]+$/, '')
+        title: file.name.replace(/\.[^.]+$/, '')
       }))
     }
   }
@@ -110,7 +110,7 @@ function InputPage() {
             setMeeting({
               ...generated,
               id: `m_${Date.now()}`,
-              title: meeting.title || generated.title,
+              title: meeting.title || meeting.mediaFile?.name?.replace(/\.[^.]+$/, '') || generated.title,
               date: meeting.date || generated.date,
               description: meeting.description || generated.description,
               objectives: meeting.objectives.length > 0 ? meeting.objectives : generated.objectives,

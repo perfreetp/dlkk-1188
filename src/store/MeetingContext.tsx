@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react'
-import { Meeting, PageType, Clip, HistoricalMeeting } from '../types'
+import { Meeting, PageType, Clip, HistoricalMeeting, TranscriptSegment } from '../types'
 import { createMockMeeting } from '../data/mockData'
 
 interface MeetingContextType {
@@ -18,6 +18,8 @@ interface MeetingContextType {
   toggleFavorite: (clipId: string) => void
   deleteClip: (clipId: string) => void
   updateManualReview: (review: string) => void
+  updateTranscriptSegment: (segmentId: string, updates: Partial<TranscriptSegment>) => void
+  recalculateMeetingStats: () => void
   isSaving: boolean
   lastSavedAt: string | null
 }
@@ -185,6 +187,52 @@ export function MeetingProvider({ children }: { children: ReactNode }) {
     setMeeting(prev => ({ ...prev, manualReview: review }))
   }
 
+  const updateTranscriptSegment = (segmentId: string, updates: Partial<TranscriptSegment>) => {
+    setMeeting(prev => {
+      const newTranscripts = prev.transcripts.map(t =>
+        t.id === segmentId ? { ...t, ...updates } : t
+      )
+      return { ...prev, transcripts: newTranscripts }
+    })
+  }
+
+  const recalculateMeetingStats = useCallback(() => {
+    setMeeting(prev => {
+      if (prev.transcripts.length === 0) return prev
+
+      const newTranscripts = [...prev.transcripts].sort((a, b) => a.startTime - b.startTime)
+
+      const speakerDurations = new Map<string, number>()
+      let interruptionCount = 0
+      let silenceDuration = 0
+      let newTopics = [...prev.topics]
+
+      newTranscripts.forEach(t => {
+        if (t.isSilence) {
+          silenceDuration += t.endTime - t.startTime
+          return
+        }
+        if (t.isInterruption) interruptionCount++
+        const current = speakerDurations.get(t.speakerId) || 0
+        speakerDurations.set(t.speakerId, current + (t.endTime - t.startTime))
+      })
+
+      newTopics = newTopics.map(topic => {
+        const relatedSegments = newTranscripts.filter(t => topic.segmentIds.includes(t.id))
+        if (relatedSegments.length === 0) return topic
+        const newStartTime = Math.min(...relatedSegments.map(s => s.startTime))
+        const newEndTime = Math.max(...relatedSegments.map(s => s.endTime))
+        return { ...topic, startTime: newStartTime, endTime: newEndTime }
+      })
+
+      return {
+        ...prev,
+        transcripts: newTranscripts,
+        topics: newTopics
+      }
+    })
+  }, [])
+
   return (
     <MeetingContext.Provider value={{
       currentPage, setCurrentPage,
@@ -192,6 +240,7 @@ export function MeetingProvider({ children }: { children: ReactNode }) {
       historicalMeetings, allHistoryMeetings,
       loadHistory, createNewMeeting, switchToMeeting, deleteHistoryMeeting, saveCurrentToHistory,
       addClip, toggleFavorite, deleteClip, updateManualReview,
+      updateTranscriptSegment, recalculateMeetingStats,
       isSaving, lastSavedAt
     }}>
       {children}

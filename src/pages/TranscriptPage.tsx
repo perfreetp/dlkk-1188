@@ -6,7 +6,8 @@ import { TranscriptSegment } from '../types'
 type FilterType = 'all' | 'interruption' | 'silence' | 'speaker'
 
 function TranscriptPage() {
-  const { meeting, addClip, saveCurrentToHistory, isSaving, lastSavedAt } = useMeeting()
+  const { meeting, addClip, saveCurrentToHistory, isSaving, lastSavedAt,
+          updateTranscriptSegment, recalculateMeetingStats, setCurrentPage } = useMeeting()
   const [filter, setFilter] = useState<FilterType>('all')
   const [selectedSpeakerId, setSelectedSpeakerId] = useState<string | null>(null)
   const [searchText, setSearchText] = useState('')
@@ -14,6 +15,14 @@ function TranscriptPage() {
   const [clipSegment, setClipSegment] = useState<TranscriptSegment | null>(null)
   const [clipName, setClipName] = useState('')
   const [clipTags, setClipTags] = useState('')
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [editingSegment, setEditingSegment] = useState<TranscriptSegment | null>(null)
+  const [editSpeakerId, setEditSpeakerId] = useState('')
+  const [editStartTime, setEditStartTime] = useState('')
+  const [editEndTime, setEditEndTime] = useState('')
+  const [editText, setEditText] = useState('')
+  const [editIsInterruption, setEditIsInterruption] = useState(false)
+  const [editIsSilence, setEditIsSilence] = useState(false)
 
   const speakerStats = useMemo(() => {
     const stats = new Map<string, { duration: number; count: number }>()
@@ -65,6 +74,54 @@ function TranscriptPage() {
     setClipSegment(null)
   }
 
+  const secondsToTimeStr = (seconds: number) => {
+    const m = Math.floor(seconds / 60)
+    const s = Math.floor(seconds % 60)
+    return `${m}:${s.toString().padStart(2, '0')}`
+  }
+
+  const timeStrToSeconds = (timeStr: string) => {
+    const parts = timeStr.split(':')
+    if (parts.length === 2) {
+      return parseInt(parts[0]) * 60 + parseInt(parts[1])
+    }
+    return 0
+  }
+
+  const handleOpenEdit = (segment: TranscriptSegment) => {
+    setEditingSegment(segment)
+    setEditSpeakerId(segment.speakerId)
+    setEditStartTime(secondsToTimeStr(segment.startTime))
+    setEditEndTime(secondsToTimeStr(segment.endTime))
+    setEditText(segment.text)
+    setEditIsInterruption(!!segment.isInterruption)
+    setEditIsSilence(!!segment.isSilence)
+    setShowEditModal(true)
+  }
+
+  const handleSaveEdit = () => {
+    if (!editingSegment) return
+    const startTime = timeStrToSeconds(editStartTime)
+    const endTime = timeStrToSeconds(editEndTime)
+    if (endTime <= startTime) {
+      alert('结束时间必须大于开始时间')
+      return
+    }
+    updateTranscriptSegment(editingSegment.id, {
+      speakerId: editSpeakerId,
+      startTime,
+      endTime,
+      text: editText,
+      isInterruption: editIsInterruption,
+      isSilence: editIsSilence
+    })
+    setTimeout(() => {
+      recalculateMeetingStats()
+    }, 50)
+    setShowEditModal(false)
+    setEditingSegment(null)
+  }
+
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -83,6 +140,26 @@ function TranscriptPage() {
       </div>
       <div style={{ marginTop: 16 }} />
 
+      {meeting.transcripts.length === 0 ? (
+        <div className="card" style={{ textAlign: 'center', padding: '60px 20px' }}>
+          <div className="empty-icon" style={{ fontSize: 64 }}>🎙️</div>
+          <div className="empty-title" style={{ fontSize: 20, marginBottom: 8 }}>暂无可转写的会议数据</div>
+          <div className="empty-desc" style={{ color: '#64748b', marginBottom: 24, maxWidth: 500, margin: '0 auto' }}>
+            请先在录入页上传会议录音或视频，AI 分析完成后即可查看转写内容
+          </div>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+            <button className="btn btn-primary" onClick={() => setCurrentPage('input')}>
+              📝 前往录入页
+            </button>
+            {meeting.mediaFile && (
+              <button className="btn btn-outline" onClick={() => setCurrentPage('input')}>
+                🔄 开始 AI 分析
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <>
       <div className="grid-4" style={{ marginBottom: 24 }}>
         <div className="stat-card">
           <div className="stat-label">会议总时长</div>
@@ -242,6 +319,13 @@ function TranscriptPage() {
                         </div>
                         <div className="transcript-text" style={{ fontStyle: 'italic' }}>（沉默 {formatDuration(t.endTime - t.startTime)}）</div>
                       </div>
+                      <div className="transcript-indicator">
+                        <button
+                          className="clip-icon-btn"
+                          title="编辑"
+                          onClick={() => handleOpenEdit(t)}
+                        >✏️</button>
+                      </div>
                     </div>
                   )
                 }
@@ -258,7 +342,12 @@ function TranscriptPage() {
                       </div>
                       <div className="transcript-text">{t.text}</div>
                     </div>
-                    <div className="transcript-indicator">
+                    <div className="transcript-indicator" style={{ display: 'flex', gap: 4 }}>
+                      <button
+                        className="clip-icon-btn"
+                        title="编辑"
+                        onClick={() => handleOpenEdit(t)}
+                      >✏️</button>
                       <button
                         className="clip-icon-btn"
                         title="收藏为素材"
@@ -272,6 +361,85 @@ function TranscriptPage() {
           </div>
         </div>
       </div>
+        </>
+      )}
+
+      {showEditModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
+        }}>
+          <div className="card" style={{ width: 560 }}>
+            <div className="card-header">
+              <h2 className="card-title">✏️ 编辑转写片段</h2>
+            </div>
+            <div className="form-group">
+              <label className="form-label">发言人</label>
+              <select
+                className="form-input"
+                value={editSpeakerId}
+                onChange={(e) => setEditSpeakerId(e.target.value)}
+              >
+                {meeting.speakers.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label className="form-label">开始时间 (分:秒)</label>
+                <input
+                  type="text" className="form-input"
+                  value={editStartTime}
+                  onChange={(e) => setEditStartTime(e.target.value)}
+                  placeholder="如: 2:30"
+                />
+              </div>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label className="form-label">结束时间 (分:秒)</label>
+                <input
+                  type="text" className="form-input"
+                  value={editEndTime}
+                  onChange={(e) => setEditEndTime(e.target.value)}
+                  placeholder="如: 3:45"
+                />
+              </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">转写内容</label>
+              <textarea
+                className="form-input"
+                style={{ minHeight: 100, resize: 'vertical' }}
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+                placeholder="输入转写内容..."
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={editIsInterruption}
+                  onChange={(e) => setEditIsInterruption(e.target.checked)}
+                />
+                <span style={{ fontSize: 13 }}>标记为打断</span>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={editIsSilence}
+                  onChange={(e) => setEditIsSilence(e.target.checked)}
+                />
+                <span style={{ fontSize: 13 }}>标记为沉默</span>
+              </label>
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => { setShowEditModal(false); setEditingSegment(null) }}>取消</button>
+              <button className="btn btn-primary" onClick={handleSaveEdit}>保存修改</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showClipModal && (
         <div style={{

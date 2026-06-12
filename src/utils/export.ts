@@ -131,10 +131,27 @@ function generateFollowUpsCSV(meeting: Meeting): string {
   return csv
 }
 
-function generateClipsIndexMarkdown(meeting: Meeting, onlyFavorite: boolean): string {
-  const clips = onlyFavorite ? meeting.clips.filter(c => c.isFavorite) : meeting.clips
+function getFilteredClips(meeting: Meeting, options: ExportOptions) {
+  let clips = meeting.clips
+  if (options.selectedClipIds && options.selectedClipIds.length > 0) {
+    clips = clips.filter(c => options.selectedClipIds!.includes(c.id))
+  } else if (options.favoriteClipsOnly) {
+    clips = clips.filter(c => c.isFavorite)
+  }
+  return clips.sort((a, b) => a.startTime - b.startTime)
+}
+
+function formatTimeForFilename(seconds: number): string {
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return `${m.toString().padStart(3, '0')}m${s.toString().padStart(2, '0')}s`
+}
+
+function generateClipsIndexMarkdown(meeting: Meeting, options: ExportOptions): string {
+  const clips = getFilteredClips(meeting, options)
+  const hasSelection = options.selectedClipIds && options.selectedClipIds.length > 0
   let md = `# 素材片段索引\n\n`
-  md += `共 ${clips.length} 个片段${onlyFavorite ? '（仅收藏）' : ''}\n\n`
+  md += `共 ${clips.length} 个片段${hasSelection ? '（已勾选）' : options.favoriteClipsOnly ? '（仅收藏）' : ''}\n\n`
 
   if (clips.length === 0) {
     md += `（暂无素材）\n`
@@ -142,8 +159,10 @@ function generateClipsIndexMarkdown(meeting: Meeting, onlyFavorite: boolean): st
   }
 
   clips.forEach((c, idx) => {
-    md += `## ${idx + 1}. ${c.name}${c.isFavorite ? ' ⭐' : ''}\n\n`
-    md += `- **时间**：${formatTimeRange(c.startTime, c.endTime)}（${formatDuration(c.endTime - c.startTime)}）\n`
+    const timeStr = formatTimeForFilename(c.startTime)
+    md += `## ${idx + 1}. [${timeStr}] ${c.name}${c.isFavorite ? ' ⭐' : ''}\n\n`
+    md += `- **时间位置**：${formatTimeRange(c.startTime, c.endTime)}（${formatDuration(c.endTime - c.startTime)}）\n`
+    md += `- **文件名**：\`${idx + 1}-${timeStr}-${c.name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 30)}.md\`\n`
     if (c.tags.length > 0) md += `- **标签**：${c.tags.map(t => `\`${t}\``).join(' ')}\n`
     md += `- **创建时间**：${c.createdAt}\n\n`
     md += `> ${c.transcript}\n\n`
@@ -152,12 +171,13 @@ function generateClipsIndexMarkdown(meeting: Meeting, onlyFavorite: boolean): st
   return md
 }
 
-function generateClipTranscriptText(meeting: Meeting, onlyFavorite: boolean): string {
-  const clips = onlyFavorite ? meeting.clips.filter(c => c.isFavorite) : meeting.clips
+function generateClipTranscriptText(meeting: Meeting, options: ExportOptions): string {
+  const clips = getFilteredClips(meeting, options)
   let txt = `素材片段文本内容\n\n`
   clips.forEach((c, idx) => {
-    txt += `【${idx + 1}】${c.name}${c.isFavorite ? ' ⭐' : ''}\n`
-    txt += `时间：${formatTimeRange(c.startTime, c.endTime)}\n`
+    const timeStr = formatTimeForFilename(c.startTime)
+    txt += `【${idx + 1}】[${timeStr}] ${c.name}${c.isFavorite ? ' ⭐' : ''}\n`
+    txt += `时间位置：${formatTimeRange(c.startTime, c.endTime)}\n`
     txt += `标签：${c.tags.join('、') || '无'}\n`
     txt += `${c.transcript}\n\n`
   })
@@ -171,6 +191,7 @@ export interface ExportOptions {
   followUps: boolean
   clips: boolean
   favoriteClipsOnly: boolean
+  selectedClipIds?: string[]
 }
 
 export async function buildExportZip(
@@ -195,8 +216,22 @@ export async function buildExportZip(
   }
   if (options.clips) {
     const sub = folder.folder('5-素材片段') || folder
-    sub.file('素材索引.md', generateClipsIndexMarkdown(meeting, options.favoriteClipsOnly))
-    sub.file('素材文本内容.txt', generateClipTranscriptText(meeting, options.favoriteClipsOnly))
+    const clips = getFilteredClips(meeting, options)
+    sub.file('素材索引.md', generateClipsIndexMarkdown(meeting, options))
+    sub.file('素材文本内容.txt', generateClipTranscriptText(meeting, options))
+    clips.forEach((c, idx) => {
+      const timeStr = formatTimeForFilename(c.startTime)
+      const safeName = c.name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 30)
+      const filename = `${idx + 1}-${timeStr}-${safeName}.md`
+      let content = `# ${c.name}${c.isFavorite ? ' ⭐' : ''}\n\n`
+      content += `| 项目 | 内容 |\n| --- | --- |\n`
+      content += `| **时间位置** | ${formatTimeRange(c.startTime, c.endTime)}（${formatDuration(c.endTime - c.startTime)}） |\n`
+      content += `| **标签** | ${c.tags.join('、') || '无'} |\n`
+      content += `| **创建时间** | ${c.createdAt} |\n\n`
+      content += `---\n\n`
+      content += `## 片段内容\n\n${c.transcript}\n`
+      sub.file(filename, content)
+    })
   }
 
   folder.file('README.txt', `AI 会议复盘工具 - 资料导出包

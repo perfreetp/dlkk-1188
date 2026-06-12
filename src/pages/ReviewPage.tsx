@@ -43,7 +43,7 @@ const SCRIPT_TEMPLATES = [
 ]
 
 function ReviewPage() {
-  const { meeting, setMeeting, saveCurrentToHistory, isSaving, lastSavedAt } = useMeeting()
+  const { meeting, setMeeting, saveCurrentToHistory, isSaving, lastSavedAt, setCurrentPage } = useMeeting()
   const [activeTab, setActiveTab] = useState<TabType>('topics')
   const [checklistState, setChecklistState] = useState<Record<string, boolean>>({})
   const [expandedTopic, setExpandedTopic] = useState<string | null>(meeting.topics[0]?.id || null)
@@ -122,6 +122,26 @@ function ReviewPage() {
       </div>
       <div style={{ marginTop: 16 }} />
 
+      {meeting.transcripts.length === 0 ? (
+        <div className="card" style={{ textAlign: 'center', padding: '60px 20px' }}>
+          <div className="empty-icon" style={{ fontSize: 64 }}>📋</div>
+          <div className="empty-title" style={{ fontSize: 20, marginBottom: 8 }}>暂无可复盘的会议数据</div>
+          <div className="empty-desc" style={{ color: '#64748b', marginBottom: 24, maxWidth: 500, margin: '0 auto' }}>
+            请先在录入页上传会议录音或视频，AI 分析完成后即可进行智能复盘
+          </div>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+            <button className="btn btn-primary" onClick={() => setCurrentPage('input')}>
+              📝 前往录入页
+            </button>
+            {meeting.mediaFile && (
+              <button className="btn btn-outline" onClick={() => setCurrentPage('input')}>
+                🔄 开始 AI 分析
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <>
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="tab-bar">
           <button
@@ -156,19 +176,25 @@ function ReviewPage() {
               <div className="stat-card">
                 <div className="stat-label">平均议题时长</div>
                 <div className="stat-value">
-                  {formatDuration(Math.round(meeting.topics.reduce((s, t) => s + (t.endTime - t.startTime), 0) / meeting.topics.length))}
+                  {meeting.topics.length > 0
+                    ? formatDuration(Math.round(meeting.topics.reduce((s, t) => s + (t.endTime - t.startTime), 0) / meeting.topics.length))
+                    : formatDuration(0)}
                 </div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">最长议题</div>
                 <div className="stat-value" style={{ fontSize: 16 }}>
-                  {meeting.topics.reduce((a, b) => (a.endTime - a.startTime) > (b.endTime - b.startTime) ? a : b).title.slice(0, 8)}...
+                  {meeting.topics.length > 0
+                    ? meeting.topics.reduce((a, b) => (a.endTime - a.startTime) > (b.endTime - b.startTime) ? a : b).title.slice(0, 8) + '...'
+                    : '—'}
                 </div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">议题覆盖率</div>
                 <div className="stat-value">
-                  {Math.round((meeting.topics.reduce((s, t) => s + (t.endTime - t.startTime), 0) / (meeting.transcripts[meeting.transcripts.length - 1]?.endTime || 1)) * 100)}%
+                  {meeting.topics.length > 0 && meeting.transcripts.length > 0
+                    ? Math.round((meeting.topics.reduce((s, t) => s + (t.endTime - t.startTime), 0) / (meeting.transcripts[meeting.transcripts.length - 1].endTime || 1)) * 100)
+                    : 0}%
                 </div>
               </div>
             </div>
@@ -377,6 +403,8 @@ function ReviewPage() {
           </div>
         )}
       </div>
+        </>
+      )}
 
       {showScriptModal && (
         <div style={{
