@@ -6,7 +6,7 @@ import { TranscriptSegment } from '../types'
 type FilterType = 'all' | 'interruption' | 'silence' | 'speaker'
 
 function TranscriptPage() {
-  const { meeting, addClip } = useMeeting()
+  const { meeting, addClip, saveCurrentToHistory, isSaving, lastSavedAt } = useMeeting()
   const [filter, setFilter] = useState<FilterType>('all')
   const [selectedSpeakerId, setSelectedSpeakerId] = useState<string | null>(null)
   const [searchText, setSearchText] = useState('')
@@ -67,8 +67,21 @@ function TranscriptPage() {
 
   return (
     <div>
-      <h1 className="page-title">AI 转写</h1>
-      <p className="page-subtitle">自动语音转写、发言人识别、发言分析，支持快速定位关键片段</p>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+        <div>
+          <h1 className="page-title" style={{ margin: 0 }}>AI 转写</h1>
+          <p className="page-subtitle" style={{ marginBottom: 0 }}>自动语音转写、发言人识别、发言分析，支持快速定位关键片段</p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {lastSavedAt && (
+            <span style={{ fontSize: 12, color: isSaving ? '#f59e0b' : '#22c55e' }}>
+              {isSaving ? '💾 正在保存...' : `✅ 已保存 ${lastSavedAt}`}
+            </span>
+          )}
+          <button className="btn btn-secondary btn-sm" onClick={saveCurrentToHistory}>💾 立即保存</button>
+        </div>
+      </div>
+      <div style={{ marginTop: 16 }} />
 
       <div className="grid-4" style={{ marginBottom: 24 }}>
         <div className="stat-card">

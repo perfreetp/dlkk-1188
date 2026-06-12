@@ -1,17 +1,18 @@
 import { useState, useMemo } from 'react'
 import { useMeeting } from '../store/MeetingContext'
 import { formatDuration, formatTimeRange, getScoreLevel } from '../utils'
+import { buildExportZip, ExportOptions } from '../utils/export'
 import { Clip } from '../types'
 
 type FilterType = 'all' | 'favorite' | 'tag'
 
 function MaterialPage() {
-  const { meeting, toggleFavorite, deleteClip } = useMeeting()
+  const { meeting, toggleFavorite, deleteClip, saveCurrentToHistory, isSaving, lastSavedAt } = useMeeting()
   const [filter, setFilter] = useState<FilterType>('all')
   const [selectedTag, setSelectedTag] = useState<string | null>(null)
   const [searchText, setSearchText] = useState('')
   const [showExportModal, setShowExportModal] = useState(false)
-  const [exportOptions, setExportOptions] = useState({
+  const [exportOptions, setExportOptions] = useState<ExportOptions>({
     minutes: true,
     transcript: true,
     score: true,
@@ -21,6 +22,8 @@ function MaterialPage() {
   })
   const [isExporting, setIsExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
+  const [exportStatus, setExportStatus] = useState('')
+  const [exportResult, setExportResult] = useState<{ success: boolean; message: string } | null>(null)
 
   const allTags = useMemo(() => {
     const tags = new Set<string>()
@@ -43,84 +46,128 @@ function MaterialPage() {
   const favoriteCount = meeting.clips.filter(c => c.isFavorite).length
   const totalDuration = meeting.clips.reduce((s, c) => s + (c.endTime - c.startTime), 0)
 
+  const getSelectedItemsCount = () => {
+    let n = 0
+    if (exportOptions.minutes) n++
+    if (exportOptions.transcript) n++
+    if (exportOptions.score) n++
+    if (exportOptions.followUps) n++
+    if (exportOptions.clips) n++
+    return n
+  }
+
   const handleExport = async () => {
+    if (getSelectedItemsCount() === 0) {
+      alert('请至少选择一项导出内容')
+      return
+    }
     setIsExporting(true)
     setExportProgress(0)
-    const steps = [
-      () => '正在整理会议纪要...',
-      () => '正在生成评分报告...',
-      () => '正在打包转写文本...',
-      () => '正在处理素材片段...',
-      () => '正在生成压缩包...'
-    ]
-    for (let i = 0; i < steps.length; i++) {
-      await new Promise(r => setTimeout(r, 600))
-      setExportProgress(((i + 1) / steps.length) * 100)
-    }
+    setExportStatus('正在整理资料...')
+    setExportResult(null)
+
     try {
-      // @ts-ignore
-      const path = await window.electronAPI?.selectSavePath()
-      if (path) {
-        alert(`已成功导出到：${path}\n\n包含内容：\n${exportOptions.minutes ? '- 会议纪要\n' : ''}${exportOptions.transcript ? '- 完整转写\n' : ''}${exportOptions.score ? '- 评分报告\n' : ''}${exportOptions.followUps ? '- 跟进清单\n' : ''}${exportOptions.clips ? '- 素材片段' : ''}`)
+      const defaultName = (meeting.title || '会议资料包').replace(/[\\/:*?"<>|]/g, '_')
+
+      setExportStatus('正在生成资料包...')
+      setExportProgress(25)
+      const zipBuffer = await buildExportZip(meeting, exportOptions)
+
+      setExportStatus('正在选择保存位置...')
+      setExportProgress(60)
+
+      let savePath: string | null = null
+      try {
+        // @ts-ignore
+        if (window.electronAPI?.selectSaveZipPath) {
+          // @ts-ignore
+          savePath = await window.electronAPI.selectSaveZipPath(defaultName)
+        }
+      } catch (e) {
+        console.warn('选择保存路径失败，将使用浏览器下载', e)
       }
-    } catch {
-      alert(`导出成功！\n\n模拟导出内容已生成：\n会议资料包.zip\n\n包含内容：\n${exportOptions.minutes ? '- 会议纪要.md\n' : ''}${exportOptions.transcript ? '- 完整转写.txt\n' : ''}${exportOptions.score ? '- 评分报告.md\n' : ''}${exportOptions.followUps ? '- 跟进清单.csv\n' : ''}${exportOptions.clips ? `- ${exportOptions.favoriteClipsOnly ? favoriteCount : meeting.clips.length} 个音视频片段` : ''}`)
+
+      if (!savePath) {
+        setExportStatus('正在浏览器下载...')
+        setExportProgress(80)
+        const blob = new Blob([zipBuffer], { type: 'application/zip' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = defaultName + '.zip'
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+        setExportProgress(100)
+        setExportResult({ success: true, message: `浏览器已开始下载：${defaultName}.zip` })
+      } else {
+        setExportStatus('正在写入本地文件...')
+        setExportProgress(80)
+        // @ts-ignore
+        const result = await window.electronAPI.writeBinaryFile(savePath, zipBuffer)
+        setExportProgress(100)
+        if (result?.success) {
+          setExportResult({ success: true, message: `资料包已成功保存到：\n${savePath}` })
+        } else {
+          setExportResult({ success: false, message: `保存失败：${result?.error || '未知错误'}\n请尝试更换保存路径。` })
+        }
+      }
+    } catch (e: any) {
+      console.error('导出失败', e)
+      setExportResult({ success: false, message: `导出失败：${e?.message || String(e)}` })
+    } finally {
+      setIsExporting(false)
+      setExportProgress(0)
+      setExportStatus('')
+      if (exportResult?.success) {
+        setTimeout(() => {
+          setShowExportModal(false)
+          setExportResult(null)
+        }, 3000)
+      }
     }
-    setIsExporting(false)
-    setExportProgress(0)
-    setShowExportModal(false)
   }
 
-  const generateMinutes = () => {
+  const generateMinutesPreview = () => {
     const { level } = getScoreLevel(meeting.score.overall)
     let content = `# ${meeting.title} - 会议纪要\n\n`
+    content += `> 预览（实际导出文件内容更完整）\n\n`
     content += `**时间：** ${meeting.date}\n\n`
-    content += `**参会人员：** ${meeting.speakers.map(s => s.name + (s.role ? `(${s.role})` : '')).join('、')}\n\n`
-    content += `---\n\n`
-    content += `## 一、会议概述\n\n`
-    content += `${meeting.description || '（无描述）'}\n\n`
-    content += `## 二、会议目标\n\n`
-    meeting.objectives.forEach((obj, i) => {
-      content += `${i + 1}. ${obj}\n`
-    })
-    content += `\n## 三、议题回顾\n\n`
-    meeting.topics.forEach((t, i) => {
-      content += `### ${i + 1}. ${t.title}\n\n`
-      content += `**时间：** ${formatTimeRange(t.startTime, t.endTime)}\n\n`
-      content += `${t.summary}\n\n`
-    })
-    content += `## 四、客户问题\n\n`
-    meeting.questions.forEach(q => {
-      content += `- [${q.category}] ${q.content}\n`
-    })
-    content += `\n## 五、跟进事项\n\n`
-    meeting.followUps.forEach(f => {
-      content += `- ${f.content}（负责人：${f.responsible}，截止：${f.deadline}）\n`
-    })
-    content += `\n## 六、会议评分\n\n`
+    content += `**参会人员：** ${meeting.speakers.map(s => s.name + (s.role ? `（${s.role}）` : '')).join('、')}\n\n`
     content += `**综合评分：${meeting.score.overall}/100（${level}）**\n\n`
-    meeting.score.items.forEach(item => {
-      content += `| ${item.name} | ${item.score}/${item.maxScore} | 权重${(item.weight * 100).toFixed(0)}% |\n`
+    content += `---\n\n`
+    content += `## 会议概述\n${meeting.description || '（无描述）'}\n\n`
+    content += `## 议题回顾（${meeting.topics.length}个）\n`
+    meeting.topics.slice(0, 3).forEach((t, i) => {
+      content += `${i + 1}. **${t.title}** — ${formatTimeRange(t.startTime, t.endTime)}\n`
     })
-    if (meeting.manualReview) {
-      content += `\n## 七、人工点评\n\n${meeting.manualReview}\n`
-    }
+    if (meeting.topics.length > 3) content += `... 共 ${meeting.topics.length} 个议题\n`
+    content += `\n## 跟进事项（${meeting.followUps.length}项）\n`
+    meeting.followUps.slice(0, 3).forEach((f, i) => {
+      content += `${i + 1}. ${f.content}（${f.responsible}）\n`
+    })
     return content
-  }
-
-  const handlePreviewMinutes = () => {
-    const content = generateMinutes()
-    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    window.open(url, '_blank')
   }
 
   return (
     <div>
-      <h1 className="page-title">素材库</h1>
-      <p className="page-subtitle">收藏优秀片段、管理会议素材、一键打包导出供团队学习</p>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+        <div>
+          <h1 className="page-title" style={{ margin: 0 }}>素材库</h1>
+          <p className="page-subtitle" style={{ marginBottom: 0 }}>收藏优秀片段、管理会议素材、一键打包导出供团队学习</p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {lastSavedAt && (
+            <span style={{ fontSize: 12, color: isSaving ? '#f59e0b' : '#22c55e' }}>
+              {isSaving ? '💾 正在保存...' : `✅ 已保存 ${lastSavedAt}`}
+            </span>
+          )}
+          <button className="btn btn-secondary btn-sm" onClick={saveCurrentToHistory}>💾 立即保存</button>
+        </div>
+      </div>
 
-      <div className="grid-4" style={{ marginBottom: 24 }}>
+      <div className="grid-4" style={{ marginBottom: 24, marginTop: 16 }}>
         <div className="stat-card">
           <div className="stat-label">素材总数</div>
           <div className="stat-value">{meeting.clips.length}</div>
@@ -166,7 +213,13 @@ function MaterialPage() {
               onChange={(e) => setSearchText(e.target.value)}
             />
           </div>
-          <button className="btn btn-secondary" onClick={handlePreviewMinutes}>
+          <button className="btn btn-secondary" onClick={() => {
+            const text = generateMinutesPreview()
+            const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+            const url = URL.createObjectURL(blob)
+            window.open(url, '_blank')
+            setTimeout(() => URL.revokeObjectURL(url), 5000)
+          }}>
             📄 预览纪要
           </button>
           <button className="btn btn-primary" onClick={() => setShowExportModal(true)}>
@@ -201,82 +254,122 @@ function MaterialPage() {
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
           background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
         }}>
-          <div className="card" style={{ width: 520 }}>
+          <div className="card" style={{ width: 560, maxHeight: '85vh', overflowY: 'auto' }}>
             <div className="card-header">
               <h2 className="card-title">📦 导出会议资料包</h2>
+              <button className="btn btn-secondary btn-sm" onClick={() => { setShowExportModal(false); setExportResult(null) }}>✕</button>
             </div>
 
             {isExporting ? (
               <div style={{ padding: '20px 0' }}>
-                <div style={{ marginBottom: 10, fontSize: 14, color: '#64748b' }}>正在生成资料包...</div>
+                <div style={{ marginBottom: 10, fontSize: 14, color: '#64748b' }}>{exportStatus}</div>
                 <div className="progress-bar">
                   <div className="progress-fill" style={{ width: `${exportProgress}%` }} />
                 </div>
                 <div style={{ marginTop: 8, textAlign: 'center', fontSize: 16, fontWeight: 600, color: '#6366f1' }}>{Math.round(exportProgress)}%</div>
               </div>
+            ) : exportResult ? (
+              <div style={{ padding: 20, textAlign: 'center' }}>
+                <div style={{ fontSize: 48, marginBottom: 12 }}>{exportResult.success ? '✅' : '❌'}</div>
+                <div style={{ fontSize: 16, fontWeight: 600, color: exportResult.success ? '#15803d' : '#991b1b', marginBottom: 12 }}>
+                  {exportResult.success ? '导出成功' : '导出失败'}
+                </div>
+                <div style={{ fontSize: 14, color: '#475569', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                  {exportResult.message}
+                </div>
+                {exportResult.success && (
+                  <div style={{ marginTop: 16, fontSize: 12, color: '#64748b' }}>
+                    本窗口将在 3 秒后自动关闭
+                  </div>
+                )}
+                {!exportResult.success && (
+                  <div style={{ marginTop: 20 }}>
+                    <button className="btn btn-secondary" onClick={() => setExportResult(null)}>返回重新导出</button>
+                  </div>
+                )}
+              </div>
             ) : (
               <>
                 <div style={{ marginBottom: 16, fontSize: 14, color: '#64748b' }}>选择需要导出的内容：</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: 10, borderRadius: 8, background: exportOptions.minutes ? '#eef2ff' : '#f8fafc' }}>
                     <input
                       type="checkbox"
                       checked={exportOptions.minutes}
                       onChange={(e) => setExportOptions({ ...exportOptions, minutes: e.target.checked })}
                       style={{ width: 18, height: 18 }}
                     />
-                    <span>📝 会议纪要（Markdown）</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 500, color: '#1e293b' }}>📝 会议纪要（Markdown）</div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>包含会议概述、议题回顾、问题汇总、跟进事项、评分等</div>
+                    </div>
                   </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: 10, borderRadius: 8, background: exportOptions.transcript ? '#eef2ff' : '#f8fafc' }}>
                     <input
                       type="checkbox"
                       checked={exportOptions.transcript}
                       onChange={(e) => setExportOptions({ ...exportOptions, transcript: e.target.checked })}
                       style={{ width: 18, height: 18 }}
                     />
-                    <span>🎙️ 完整转写文本（TXT）</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 500, color: '#1e293b' }}>🎙️ 完整转写（TXT）</div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>逐句语音转写，带发言人、时间戳、打断/沉默标记</div>
+                    </div>
                   </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: 10, borderRadius: 8, background: exportOptions.score ? '#eef2ff' : '#f8fafc' }}>
                     <input
                       type="checkbox"
                       checked={exportOptions.score}
                       onChange={(e) => setExportOptions({ ...exportOptions, score: e.target.checked })}
                       style={{ width: 18, height: 18 }}
                     />
-                    <span>⭐ 评分报告（含人工点评）</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 500, color: '#1e293b' }}>⭐ 评分报告（含人工点评）</div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>6 维度分项评分、可视化分数条、AI 评语和人工点评</div>
+                    </div>
                   </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: 10, borderRadius: 8, background: exportOptions.followUps ? '#eef2ff' : '#f8fafc' }}>
                     <input
                       type="checkbox"
                       checked={exportOptions.followUps}
                       onChange={(e) => setExportOptions({ ...exportOptions, followUps: e.target.checked })}
                       style={{ width: 18, height: 18 }}
                     />
-                    <span>📋 跟进事项清单（CSV）</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 500, color: '#1e293b' }}>📋 跟进事项清单（CSV）</div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>Excel 可打开的表格，含状态、内容、负责人、截止时间</div>
+                    </div>
                   </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: 10, borderRadius: 8, background: exportOptions.clips ? '#eef2ff' : '#f8fafc' }}>
                     <input
                       type="checkbox"
                       checked={exportOptions.clips}
                       onChange={(e) => setExportOptions({ ...exportOptions, clips: e.target.checked })}
                       style={{ width: 18, height: 18 }}
                     />
-                    <span>🎬 音视频素材片段</span>
-                    {exportOptions.clips && (
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 10, fontSize: 13, color: '#64748b' }}>
-                        <input
-                          type="checkbox"
-                          checked={exportOptions.favoriteClipsOnly}
-                          onChange={(e) => setExportOptions({ ...exportOptions, favoriteClipsOnly: e.target.checked })}
-                        />
-                        仅收藏（{favoriteCount}）
-                      </label>
-                    )}
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div>
+                        <div style={{ fontWeight: 500, color: '#1e293b' }}>📑 素材片段索引与文本</div>
+                        <div style={{ fontSize: 12, color: '#64748b' }}>导出片段的 Markdown 索引和完整文本内容</div>
+                      </div>
+                      {exportOptions.clips && (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 10, fontSize: 13, color: '#64748b', whiteSpace: 'nowrap' }}>
+                          <input
+                            type="checkbox"
+                            checked={exportOptions.favoriteClipsOnly}
+                            onChange={(e) => setExportOptions({ ...exportOptions, favoriteClipsOnly: e.target.checked })}
+                          />
+                          仅收藏（{favoriteCount}）
+                        </label>
+                      )}
+                    </div>
                   </label>
                 </div>
-                <div style={{ padding: '14px 16px', background: '#f8fafc', borderRadius: 8, marginBottom: 16, fontSize: 13, color: '#475569' }}>
-                  <strong>导出预览：</strong>生成 ZIP 压缩包，包含会议纪要、评分表、转写文本及素材片段，可直接分享给团队成员。
+
+                <div style={{ padding: '14px 16px', background: '#f8fafc', borderRadius: 8, marginBottom: 16, fontSize: 13, color: '#475569', lineHeight: 1.7 }}>
+                  <strong>导出预览：</strong>已选择 <strong style={{ color: '#6366f1' }}>{getSelectedItemsCount()}</strong> 项内容，将生成 ZIP 压缩包，包含上述 Markdown / TXT / CSV 文件，可直接分享给团队成员打开查看。
                 </div>
+
                 <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                   <button className="btn btn-secondary" onClick={() => setShowExportModal(false)}>取消</button>
                   <button className="btn btn-primary" onClick={handleExport}>开始导出</button>
@@ -308,13 +401,21 @@ function ClipCard({ clip, onToggleFavorite, onDelete }: {
           >{clip.isFavorite ? '⭐' : '☆'}</button>
           <button
             className="clip-icon-btn"
-            title="播放"
-          >▶️</button>
+            title="复制文本"
+            onClick={() => {
+              navigator.clipboard?.writeText(clip.transcript)
+            }}
+          >📋</button>
           <button
             className="clip-icon-btn"
-            title="复制文本"
-            onClick={() => navigator.clipboard?.writeText(clip.transcript)}
-          >📋</button>
+            title="查看全文"
+            onClick={() => {
+              const blob = new Blob([`【${clip.name}】\n\n时间：${formatTimeRange(clip.startTime, clip.endTime)}\n标签：${clip.tags.join('、') || '无'}\n\n${clip.transcript}`], { type: 'text/plain;charset=utf-8' })
+              const url = URL.createObjectURL(blob)
+              window.open(url, '_blank')
+              setTimeout(() => URL.revokeObjectURL(url), 5000)
+            }}
+          >�</button>
           <button
             className="clip-icon-btn"
             title="删除"
@@ -339,7 +440,7 @@ function ClipCard({ clip, onToggleFavorite, onDelete }: {
           <div style={{ fontSize: 13, color: '#991b1b', marginBottom: 8 }}>确定删除此素材？</div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button className="btn btn-secondary btn-sm" onClick={() => setShowConfirm(false)}>取消</button>
-            <button className="btn btn-danger btn-sm" onClick={onDelete}>删除</button>
+            <button className="btn btn-danger btn-sm" onClick={() => { onDelete(); setShowConfirm(false) }}>删除</button>
           </div>
         </div>
       )}

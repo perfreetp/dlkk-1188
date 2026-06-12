@@ -1,16 +1,22 @@
 import { useState } from 'react'
 import { useMeeting } from '../store/MeetingContext'
-import { formatFileSize } from '../utils'
+import { formatFileSize, formatDuration } from '../utils'
 import { MediaFile, Speaker } from '../types'
+import { generateMeetingFromMedia } from '../data/generator'
 
 const COLORS = ['#6366f1', '#ec4899', '#14b8a6', '#f59e0b', '#8b5cf6', '#ef4444', '#22c55e', '#0ea5e9']
 const ROLES = ['培训讲师', '销售主管', '团队负责人', '产品经理', '技术顾问', '客户代表', '其他']
 
 function InputPage() {
-  const { meeting, setMeeting, setCurrentPage } = useMeeting()
+  const {
+    meeting, setMeeting, setCurrentPage,
+    allHistoryMeetings, switchToMeeting, deleteHistoryMeeting,
+    createNewMeeting, saveCurrentToHistory, isSaving, lastSavedAt
+  } = useMeeting()
   const [isDragging, setIsDragging] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [progress, setProgress] = useState(0)
+  const [processPhase, setProcessPhase] = useState('')
   const [newSpeakerName, setNewSpeakerName] = useState('')
   const [newSpeakerRole, setNewSpeakerRole] = useState('')
 
@@ -23,11 +29,11 @@ function InputPage() {
       }
     } catch {
       const mockFile: MediaFile = {
-        path: 'C:/Meetings/Q3客户合作方案沟通会.mp4',
-        name: 'Q3客户合作方案沟通会.mp4',
+        path: 'C:/Meetings/' + Date.now() + '.mp4',
+        name: '会议录音_' + Date.now() + '.mp4',
         type: 'video',
-        size: 125_000_000,
-        duration: 430
+        size: 80_000_000 + Math.floor(Math.random() * 120_000_000),
+        duration: 600 + Math.floor(Math.random() * 2400)
       }
       setMeeting(prev => ({ ...prev, mediaFile: mockFile }))
     }
@@ -37,14 +43,14 @@ function InputPage() {
     const name = filePath.split(/[/\\]/).pop() || ''
     const ext = name.split('.').pop()?.toLowerCase() || ''
     const type = ['mp4', 'mov', 'avi', 'mkv'].includes(ext) ? 'video' : 'audio'
-    const file: MediaFile = {
-      path: filePath,
-      name,
-      type,
-      size: Math.floor(Math.random() * 200_000_000) + 10_000_000,
-      duration: Math.floor(Math.random() * 3000) + 600
-    }
-    setMeeting(prev => ({ ...prev, mediaFile: file }))
+    const size = 20_000_000 + Math.floor(Math.random() * 300_000_000)
+    const duration = 480 + Math.floor(Math.random() * 3600)
+    const file: MediaFile = { path: filePath, name, type, size, duration }
+    setMeeting(prev => ({
+      ...prev,
+      mediaFile: file,
+      title: prev.title || name.replace(/\.[^.]+$/, '')
+    }))
   }
 
   const handleDrop = (e: React.DragEvent) => {
@@ -60,9 +66,13 @@ function InputPage() {
         name: file.name,
         type,
         size: file.size,
-        duration: 430
+        duration: 600 + Math.floor(Math.random() * 2400)
       }
-      setMeeting(prev => ({ ...prev, mediaFile }))
+      setMeeting(prev => ({
+        ...prev,
+        mediaFile,
+        title: prev.title || file.name.replace(/\.[^.]+$/, '')
+      }))
     }
   }
 
@@ -71,19 +81,51 @@ function InputPage() {
   }
 
   const handleProcessAI = () => {
+    if (!meeting.mediaFile) return
     setIsProcessing(true)
     setProgress(0)
+    const phases = [
+      '正在提取音频特征...',
+      '正在进行语音转写...',
+      '正在识别发言人...',
+      '正在切分会议议题...',
+      '正在提取客户问题...',
+      '正在生成评分报告...',
+      '正在整理分析结果...'
+    ]
+    let phaseIdx = 0
+    setProcessPhase(phases[0])
     const timer = setInterval(() => {
       setProgress(prev => {
-        if (prev >= 100) {
+        const next = prev + 3
+        const newPhaseIdx = Math.min(Math.floor(next / (100 / phases.length)), phases.length - 1)
+        if (newPhaseIdx !== phaseIdx) {
+          phaseIdx = newPhaseIdx
+          setProcessPhase(phases[phaseIdx])
+        }
+        if (next >= 100) {
           clearInterval(timer)
-          setIsProcessing(false)
-          setTimeout(() => setCurrentPage('transcript'), 300)
+          setTimeout(() => {
+            const generated = generateMeetingFromMedia(meeting.mediaFile!, meeting.title, meeting.date)
+            setMeeting({
+              ...generated,
+              id: `m_${Date.now()}`,
+              title: meeting.title || generated.title,
+              date: meeting.date || generated.date,
+              description: meeting.description || generated.description,
+              objectives: meeting.objectives.length > 0 ? meeting.objectives : generated.objectives,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            })
+            setIsProcessing(false)
+            setProgress(0)
+            setTimeout(() => setCurrentPage('transcript'), 400)
+          }, 400)
           return 100
         }
-        return prev + 5
+        return next
       })
-    }, 100)
+    }, 120)
   }
 
   const handleAddSpeaker = () => {
@@ -124,10 +166,73 @@ function InputPage() {
 
   return (
     <div>
-      <h1 className="page-title">会议录入</h1>
-      <p className="page-subtitle">导入会议录音或视频，填写会议基本信息，开始 AI 智能分析</p>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+        <div>
+          <h1 className="page-title" style={{ margin: 0 }}>会议录入</h1>
+          <p className="page-subtitle" style={{ marginBottom: 0 }}>导入会议录音或视频，填写会议基本信息，开始 AI 智能分析</p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {lastSavedAt && (
+            <span style={{ fontSize: 12, color: isSaving ? '#f59e0b' : '#22c55e' }}>
+              {isSaving ? '💾 正在保存...' : `✅ 已保存 ${lastSavedAt}`}
+            </span>
+          )}
+          <button className="btn btn-outline btn-sm" onClick={createNewMeeting}>
+            ＋ 新建会议
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={saveCurrentToHistory}>
+            💾 立即保存
+          </button>
+        </div>
+      </div>
 
-      <div className="card">
+      {allHistoryMeetings.length > 0 && (
+        <div className="card" style={{ marginTop: 20 }}>
+          <div className="card-header">
+            <h2 className="card-title">🕒 历史会议（共 {allHistoryMeetings.length} 个）</h2>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+            {allHistoryMeetings.slice(0, 8).map(m => (
+              <div
+                key={m.id}
+                style={{
+                  padding: 14, borderRadius: 10, border: m.id === meeting.id ? '2px solid #6366f1' : '1px solid #e2e8f0',
+                  background: m.id === meeting.id ? '#eef2ff' : '#fff', cursor: 'pointer', transition: 'all 0.2s'
+                }}
+                onClick={() => switchToMeeting(m.id)}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <div style={{ fontWeight: 600, color: '#1e293b', fontSize: 14, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.title}>
+                    {m.title || '未命名会议'}
+                  </div>
+                  {m.id === meeting.id && <span className="tag tag-primary" style={{ marginLeft: 6 }}>当前</span>}
+                </div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>{m.date}</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
+                    <span style={{ color: '#6366f1', fontWeight: 600 }}>{m.score?.overall || 0}分</span>
+                    <span style={{ color: '#94a3b8' }}>{formatDuration(m.transcripts?.length > 0 ? m.transcripts[m.transcripts.length - 1].endTime : 0)}</span>
+                    <span style={{ color: '#94a3b8' }}>{m.topics?.length || 0}议题</span>
+                  </div>
+                  <button
+                    className="clip-icon-btn"
+                    title="删除"
+                    style={{ color: '#ef4444' }}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (confirm(`确定删除会议"${m.title}"吗？`)) {
+                        deleteHistoryMeeting(m.id)
+                      }
+                    }}
+                  >🗑️</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{ marginTop: 20 }}>
         <div className="card-header">
           <h2 className="card-title">📁 会议媒体文件</h2>
         </div>
@@ -150,7 +255,8 @@ function InputPage() {
             <div className="media-details">
               <div className="media-name">{meeting.mediaFile.name}</div>
               <div className="media-meta">
-                {meeting.mediaFile.type === 'video' ? '视频文件' : '音频文件'} · {formatFileSize(meeting.mediaFile.size)} · 时长约 7 分 10 秒
+                {meeting.mediaFile.type === 'video' ? '视频文件' : '音频文件'} · {formatFileSize(meeting.mediaFile.size)}
+                {meeting.mediaFile.duration ? ` · 时长约 ${formatDuration(meeting.mediaFile.duration)}` : ''}
               </div>
             </div>
             <button className="btn btn-outline btn-sm" onClick={handleRemoveMedia}>更换文件</button>
@@ -162,24 +268,20 @@ function InputPage() {
             {isProcessing ? (
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
-                  <span style={{ fontSize: 14, color: '#64748b' }}>
-                    AI 正在分析音频内容...</span>
+                  <span style={{ fontSize: 14, color: '#64748b' }}>{processPhase}</span>
                   <span style={{ fontSize: 14, fontWeight: 600, color: '#6366f1' }}>{progress}%</span>
                 </div>
                 <div className="progress-bar">
                   <div className="progress-fill" style={{ width: `${progress}%` }} />
                 </div>
-                <div style={{ marginTop: 10, fontSize: 12, color: '#94a3b8' }}>
-                  {progress < 30 ? '正在提取音频特征...' : progress < 60 ? '正在语音转写...' : progress < 90 ? '正在分析对话内容...' : '正在生成分析结果...'}
-                </div>
               </div>
             ) : (
-                <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{ display: 'flex', gap: 12 }}>
                 <button className="btn btn-primary" onClick={handleProcessAI}>
                   🚀 开始 AI 分析
                 </button>
                 <button className="btn btn-secondary" onClick={() => setCurrentPage('transcript')}>
-                  跳过，使用示例数据
+                  跳过，直接查看
                 </button>
               </div>
             )}
@@ -288,7 +390,7 @@ function InputPage() {
           <div className="empty-state">
             <div className="empty-icon">👥</div>
             <div className="empty-title">还没有添加参会人员</div>
-            <div className="empty-desc">AI 会自动识别发言人，您也可以手动添加后进行修正</div>
+            <div className="empty-desc">AI 分析后会自动识别发言人，您也可以手动添加</div>
           </div>
         ) : (
           <div>

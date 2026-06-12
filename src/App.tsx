@@ -15,7 +15,7 @@ const NAV_ITEMS: { key: PageType; label: string; icon: string }[] = [
 ]
 
 function App() {
-  const { currentPage, setCurrentPage } = useMeeting()
+  const { currentPage, setCurrentPage, meeting } = useMeeting()
 
   const renderPage = () => {
     switch (currentPage) {
@@ -33,7 +33,12 @@ function App() {
       <header className="app-header">
         <div className="app-logo">
           <div className="app-logo-icon">🤝</div>
-          <span>AI 会议复盘工具</span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>AI 会议复盘工具</div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={meeting.title || '未选择会议'}>
+              {meeting.title ? `📋 ${meeting.title}` : '📋 未选择会议'}
+            </div>
+          </div>
         </div>
         <nav className="app-nav">
           {NAV_ITEMS.map(item => (
@@ -47,7 +52,9 @@ function App() {
             </button>
           ))}
         </nav>
-        <div style={{ width: 200 }} />
+        <div style={{ width: 200, textAlign: 'right', fontSize: 12, color: '#64748b' }}>
+          {meeting.date}
+        </div>
       </header>
       <main className="app-content animate-in">
         <div className="page-container">

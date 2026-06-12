@@ -43,7 +43,7 @@ const SCRIPT_TEMPLATES = [
 ]
 
 function ReviewPage() {
-  const { meeting, setMeeting } = useMeeting()
+  const { meeting, setMeeting, saveCurrentToHistory, isSaving, lastSavedAt } = useMeeting()
   const [activeTab, setActiveTab] = useState<TabType>('topics')
   const [checklistState, setChecklistState] = useState<Record<string, boolean>>({})
   const [expandedTopic, setExpandedTopic] = useState<string | null>(meeting.topics[0]?.id || null)
@@ -106,8 +106,21 @@ function ReviewPage() {
 
   return (
     <div>
-      <h1 className="page-title">智能复盘</h1>
-      <p className="page-subtitle">AI 自动切分议题、提取客户问题、生成跟进话术，辅助全面复盘</p>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+        <div>
+          <h1 className="page-title" style={{ margin: 0 }}>智能复盘</h1>
+          <p className="page-subtitle" style={{ marginBottom: 0 }}>AI 自动切分议题、提取客户问题、生成跟进话术，辅助全面复盘</p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {lastSavedAt && (
+            <span style={{ fontSize: 12, color: isSaving ? '#f59e0b' : '#22c55e' }}>
+              {isSaving ? '💾 正在保存...' : `✅ 已保存 ${lastSavedAt}`}
+            </span>
+          )}
+          <button className="btn btn-secondary btn-sm" onClick={saveCurrentToHistory}>💾 立即保存</button>
+        </div>
+      </div>
+      <div style={{ marginTop: 16 }} />
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="tab-bar">
