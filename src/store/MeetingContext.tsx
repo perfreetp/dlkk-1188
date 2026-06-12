@@ -1,6 +1,16 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react'
-import { Meeting, PageType, Clip, HistoricalMeeting, TranscriptSegment } from '../types'
+import { Meeting, PageType, Clip, HistoricalMeeting, TranscriptSegment, Topic, CustomerQuestion, FollowUpAction, MeetingScore } from '../types'
 import { createMockMeeting } from '../data/mockData'
+import { regenerateFromTranscripts, RegeneratedData, listDiffFields } from '../utils/aiRegenerate'
+
+export interface PendingChanges {
+  regeneratedAt: string
+  data: RegeneratedData
+  acceptedTopics: Set<string>
+  acceptedQuestions: Set<string>
+  acceptedFollowUps: Set<string>
+  acceptedScore: boolean
+}
 
 interface MeetingContextType {
   currentPage: PageType
@@ -22,6 +32,16 @@ interface MeetingContextType {
   recalculateMeetingStats: () => void
   isSaving: boolean
   lastSavedAt: string | null
+  pendingChanges: PendingChanges | null
+  triggerRegenerate: () => void
+  acceptAllPending: () => void
+  discardAllPending: () => void
+  acceptPartialPending: (options: {
+    topicIds?: string[]
+    questionIds?: string[]
+    followUpIds?: string[]
+    score?: boolean
+  }) => void
 }
 
 const MeetingContext = createContext<MeetingContextType | null>(null)
@@ -44,8 +64,91 @@ export function MeetingProvider({ children }: { children: ReactNode }) {
   const [allHistoryMeetings, setAllHistoryMeetings] = useState<Meeting[]>([])
   const [isSaving, setIsSaving] = useState(false)
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null)
+  const [pendingChanges, setPendingChanges] = useState<PendingChanges | null>(null)
 
   const historicalMeetings: HistoricalMeeting[] = allHistoryMeetings.map(meetingToHistorical)
+
+  const triggerRegenerate = useCallback(() => {
+    if (meeting.transcripts.length === 0) return
+    const data = regenerateFromTranscripts(meeting)
+    setPendingChanges({
+      regeneratedAt: new Date().toLocaleString('zh-CN'),
+      data,
+      acceptedTopics: new Set(data.topics.map(t => t.id)),
+      acceptedQuestions: new Set(data.questions.map(q => q.id)),
+      acceptedFollowUps: new Set(data.followUps.map(f => f.id)),
+      acceptedScore: true
+    })
+  }, [meeting])
+
+  const acceptAllPending = useCallback(() => {
+    if (!pendingChanges) return
+    setMeeting(prev => ({
+      ...prev,
+      topics: pendingChanges.data.topics,
+      questions: pendingChanges.data.questions,
+      followUps: pendingChanges.data.followUps,
+      score: pendingChanges.data.score
+    }))
+    setPendingChanges(null)
+  }, [pendingChanges])
+
+  const discardAllPending = useCallback(() => {
+    setPendingChanges(null)
+  }, [])
+
+  const acceptPartialPending = useCallback((options: {
+    topicIds?: string[]
+    questionIds?: string[]
+    followUpIds?: string[]
+    score?: boolean
+  }) => {
+    if (!pendingChanges) return
+    let newTopics = meeting.topics
+    let newQuestions = meeting.questions
+    let newFollowUps = meeting.followUps
+    let newScore = meeting.score
+
+    if (options.topicIds && options.topicIds.length > 0) {
+      const topicMap = new Map(pendingChanges.data.topics.map(t => [t.id, t]))
+      newTopics = meeting.topics.map(oldT => {
+        if (options.topicIds!.includes(oldT.id)) {
+          const nt = topicMap.get(oldT.id)
+          return nt ? { ...oldT, summary: nt.summary, startTime: nt.startTime, endTime: nt.endTime }
+            : oldT
+        }
+        return oldT
+      })
+    }
+    if (options.questionIds && options.questionIds.length > 0) {
+      newQuestions = [...meeting.questions]
+      pendingChanges.data.questions.forEach(nq => {
+        if (options.questionIds!.includes(nq.id)) {
+          if (!newQuestions.find(x => x.id === nq.id)) newQuestions.push(nq)
+        }
+      })
+    }
+    if (options.followUpIds && options.followUpIds.length > 0) {
+      newFollowUps = [...meeting.followUps]
+      pendingChanges.data.followUps.forEach(nf => {
+        if (options.followUpIds!.includes(nf.id)) {
+          if (!newFollowUps.find(x => x.id === nf.id)) newFollowUps.push(nf)
+        }
+      })
+    }
+    if (options.score) {
+      newScore = pendingChanges.data.score
+    }
+
+    setMeeting(prev => ({
+      ...prev,
+      topics: newTopics,
+      questions: newQuestions,
+      followUps: newFollowUps,
+      score: newScore
+    }))
+    setPendingChanges(null)
+  }, [pendingChanges, meeting.topics, meeting.questions, meeting.followUps, meeting.score])
 
   const loadHistory = useCallback(async () => {
     try {
@@ -123,6 +226,7 @@ export function MeetingProvider({ children }: { children: ReactNode }) {
       updatedAt: new Date().toISOString()
     }
     setMeeting(empty)
+    setPendingChanges(null)
     setCurrentPage('input')
   }, [])
 
@@ -134,6 +238,7 @@ export function MeetingProvider({ children }: { children: ReactNode }) {
         const data = await window.electronAPI.getMeetingFromHistory(meetingId)
         if (data) {
           setMeeting(data as Meeting)
+          setPendingChanges(null)
           setCurrentPage('transcript')
         }
       }
@@ -199,24 +304,14 @@ export function MeetingProvider({ children }: { children: ReactNode }) {
   const recalculateMeetingStats = useCallback(() => {
     setMeeting(prev => {
       if (prev.transcripts.length === 0) return prev
-
       const newTranscripts = [...prev.transcripts].sort((a, b) => a.startTime - b.startTime)
-
       const speakerDurations = new Map<string, number>()
-      let interruptionCount = 0
-      let silenceDuration = 0
       let newTopics = [...prev.topics]
-
       newTranscripts.forEach(t => {
-        if (t.isSilence) {
-          silenceDuration += t.endTime - t.startTime
-          return
-        }
-        if (t.isInterruption) interruptionCount++
+        if (t.isSilence) return
         const current = speakerDurations.get(t.speakerId) || 0
         speakerDurations.set(t.speakerId, current + (t.endTime - t.startTime))
       })
-
       newTopics = newTopics.map(topic => {
         const relatedSegments = newTranscripts.filter(t => topic.segmentIds.includes(t.id))
         if (relatedSegments.length === 0) return topic
@@ -224,14 +319,10 @@ export function MeetingProvider({ children }: { children: ReactNode }) {
         const newEndTime = Math.max(...relatedSegments.map(s => s.endTime))
         return { ...topic, startTime: newStartTime, endTime: newEndTime }
       })
-
-      return {
-        ...prev,
-        transcripts: newTranscripts,
-        topics: newTopics
-      }
+      return { ...prev, transcripts: newTranscripts, topics: newTopics }
     })
-  }, [])
+    setTimeout(() => triggerRegenerate(), 80)
+  }, [triggerRegenerate])
 
   return (
     <MeetingContext.Provider value={{
@@ -241,7 +332,8 @@ export function MeetingProvider({ children }: { children: ReactNode }) {
       loadHistory, createNewMeeting, switchToMeeting, deleteHistoryMeeting, saveCurrentToHistory,
       addClip, toggleFavorite, deleteClip, updateManualReview,
       updateTranscriptSegment, recalculateMeetingStats,
-      isSaving, lastSavedAt
+      isSaving, lastSavedAt,
+      pendingChanges, triggerRegenerate, acceptAllPending, discardAllPending, acceptPartialPending
     }}>
       {children}
     </MeetingContext.Provider>

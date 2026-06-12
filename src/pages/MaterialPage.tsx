@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useMeeting } from '../store/MeetingContext'
 import { formatDuration, formatTimeRange, getScoreLevel } from '../utils'
-import { buildExportZip, ExportOptions } from '../utils/export'
+import { buildExportZip, ExportOptions, DeliveryMode } from '../utils/export'
 import { Clip } from '../types'
 
 type FilterType = 'all' | 'favorite' | 'tag'
@@ -12,13 +12,15 @@ function MaterialPage() {
   const [selectedTag, setSelectedTag] = useState<string | null>(null)
   const [searchText, setSearchText] = useState('')
   const [showExportModal, setShowExportModal] = useState(false)
+  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>('team')
   const [exportOptions, setExportOptions] = useState<ExportOptions>({
     minutes: true,
     transcript: true,
     score: true,
     followUps: true,
     clips: true,
-    favoriteClipsOnly: false
+    favoriteClipsOnly: false,
+    deliveryMode: 'team'
   })
   const [isExporting, setIsExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
@@ -106,6 +108,7 @@ function MaterialPage() {
       setExportProgress(25)
       const finalOptions: ExportOptions = {
         ...exportOptions,
+        deliveryMode,
         selectedClipIds: selectedClipIds.size > 0 ? Array.from(selectedClipIds) : undefined
       }
       const zipBuffer = await buildExportZip(meeting, finalOptions)
@@ -340,7 +343,43 @@ function MaterialPage() {
               </div>
             ) : (
               <>
-                <div style={{ marginBottom: 16, fontSize: 14, color: '#64748b' }}>选择需要导出的内容：</div>
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, color: '#64748b', marginBottom: 8 }}>选择交付版本：</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <label style={{
+                      display: 'block', cursor: 'pointer', padding: 12, borderRadius: 10,
+                      border: deliveryMode === 'team' ? '2px solid #6366f1' : '1px solid #e2e8f0',
+                      background: deliveryMode === 'team' ? '#eef2ff' : '#f8fafc'
+                    }}>
+                      <input
+                        type="radio" name="deliveryMode"
+                        checked={deliveryMode === 'team'}
+                        onChange={() => setDeliveryMode('team')}
+                      />
+                      <span style={{ marginLeft: 8, fontWeight: 600, color: '#1e293b' }}>👥 团队内部版</span>
+                      <div style={{ marginTop: 4, marginLeft: 26, fontSize: 12, color: '#64748b', lineHeight: 1.6 }}>
+                        包含完整评分报告、人工点评、逐句转写等所有内部信息
+                      </div>
+                    </label>
+                    <label style={{
+                      display: 'block', cursor: 'pointer', padding: 12, borderRadius: 10,
+                      border: deliveryMode === 'client' ? '2px solid #0ea5e9' : '1px solid #e2e8f0',
+                      background: deliveryMode === 'client' ? '#e0f2fe' : '#f8fafc'
+                    }}>
+                      <input
+                        type="radio" name="deliveryMode"
+                        checked={deliveryMode === 'client'}
+                        onChange={() => setDeliveryMode('client')}
+                      />
+                      <span style={{ marginLeft: 8, fontWeight: 600, color: '#1e293b' }}>🤝 对外客户版</span>
+                      <div style={{ marginTop: 4, marginLeft: 26, fontSize: 12, color: '#64748b', lineHeight: 1.6 }}>
+                        隐藏内部评分与人工点评，仅保留纪要、跟进事项与精选片段
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 12, fontSize: 14, color: '#64748b' }}>选择需要导出的内容：</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: 10, borderRadius: 8, background: exportOptions.minutes ? '#eef2ff' : '#f8fafc' }}>
                     <input
@@ -351,18 +390,29 @@ function MaterialPage() {
                     />
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 500, color: '#1e293b' }}>📝 会议纪要（Markdown）</div>
-                      <div style={{ fontSize: 12, color: '#64748b' }}>包含会议概述、议题回顾、问题汇总、跟进事项、评分等</div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>
+                        {deliveryMode === 'client' ? '对外版本，仅包含概述、议题、问题、跟进（不含内部评分）' : '包含会议概述、议题回顾、问题汇总、跟进事项、评分等'}
+                      </div>
                     </div>
                   </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: 10, borderRadius: 8, background: exportOptions.transcript ? '#eef2ff' : '#f8fafc' }}>
+                  <label style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: 10, borderRadius: 8,
+                    background: deliveryMode === 'client' ? '#f1f5f9' : (exportOptions.transcript ? '#eef2ff' : '#f8fafc'),
+                    opacity: deliveryMode === 'client' ? 0.5 : 1,
+                    cursor: deliveryMode === 'client' ? 'not-allowed' : 'pointer'
+                  }}>
                     <input
-                      type="checkbox"
-                      checked={exportOptions.transcript}
+                      type="checkbox" disabled={deliveryMode === 'client'}
+                      checked={deliveryMode === 'client' ? false : exportOptions.transcript}
                       onChange={(e) => setExportOptions({ ...exportOptions, transcript: e.target.checked })}
                       style={{ width: 18, height: 18 }}
                     />
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 500, color: '#1e293b' }}>🎙️ 完整转写（TXT）</div>
+                      <div style={{ fontWeight: 500, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        🎙️ 完整转写（TXT）
+                        {deliveryMode === 'client' && <span className="tag tag-default" style={{ fontSize: 11 }}>客户版不包含</span>}
+                      </div>
                       <div style={{ fontSize: 12, color: '#64748b' }}>逐句语音转写，带发言人、时间戳、打断/沉默标记</div>
                     </div>
                   </label>
@@ -374,8 +424,12 @@ function MaterialPage() {
                       style={{ width: 18, height: 18 }}
                     />
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 500, color: '#1e293b' }}>⭐ 评分报告（含人工点评）</div>
-                      <div style={{ fontSize: 12, color: '#64748b' }}>6 维度分项评分、可视化分数条、AI 评语和人工点评</div>
+                      <div style={{ fontWeight: 500, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {deliveryMode === 'client' ? '📊 会议成效摘要' : '⭐ 评分报告（含人工点评）'}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>
+                        {deliveryMode === 'client' ? '对外友好的成效摘要（无内部评分和人工点评）' : '6 维度分项评分、可视化分数条、AI 评语和人工点评'}
+                      </div>
                     </div>
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: 10, borderRadius: 8, background: exportOptions.followUps ? '#eef2ff' : '#f8fafc' }}>
@@ -399,7 +453,9 @@ function MaterialPage() {
                     />
                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <div>
-                        <div style={{ fontWeight: 500, color: '#1e293b' }}>📑 素材片段索引与文本</div>
+                        <div style={{ fontWeight: 500, color: '#1e293b' }}>
+                          {deliveryMode === 'client' ? '📑 精选沟通片段' : '📑 素材片段索引与文本'}
+                        </div>
                         <div style={{ fontSize: 12, color: '#64748b' }}>
                           {selectedClipIds.size > 0
                             ? `已勾选 ${selectedClipIds.size} 个片段，将仅导出选中内容`
@@ -423,8 +479,20 @@ function MaterialPage() {
                   </label>
                 </div>
 
-                <div style={{ padding: '14px 16px', background: '#f8fafc', borderRadius: 8, marginBottom: 16, fontSize: 13, color: '#475569', lineHeight: 1.7 }}>
-                  <strong>导出预览：</strong>已选择 <strong style={{ color: '#6366f1' }}>{getSelectedItemsCount()}</strong> 项内容，将生成 ZIP 压缩包，包含上述 Markdown / TXT / CSV 文件，可直接分享给团队成员打开查看。
+                <div style={{
+                  padding: '14px 16px',
+                  borderRadius: 8,
+                  marginBottom: 16,
+                  fontSize: 13,
+                  lineHeight: 1.7,
+                  background: deliveryMode === 'client' ? 'linear-gradient(135deg, #e0f2fe, #ecfeff)' : '#f8fafc',
+                  color: deliveryMode === 'client' ? '#0369a1' : '#475569'
+                }}>
+                  <strong>导出预览：</strong>
+                  {deliveryMode === 'client' ? '【客户版】' : '【团队版】'}
+                  已选择 <strong style={{ color: deliveryMode === 'client' ? '#0284c7' : '#6366f1' }}>{getSelectedItemsCount()}</strong> 项内容，
+                  将生成 ZIP 压缩包（文件名含版本标识），
+                  {deliveryMode === 'client' ? '已自动隐藏内部评分和转写，适合对外发送。' : '包含上述 Markdown / TXT / CSV 文件，可直接分享给团队成员打开查看。'}
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>

@@ -2,17 +2,21 @@ import JSZip from 'jszip'
 import { Meeting } from '../types'
 import { formatDuration, formatTimeRange, getScoreLevel } from './index'
 
-function generateMinutesMarkdown(meeting: Meeting): string {
+export type DeliveryMode = 'team' | 'client'
+
+function generateMinutesMarkdown(meeting: Meeting, mode: DeliveryMode = 'team'): string {
   const { level } = getScoreLevel(meeting.score.overall)
-  let md = `# ${meeting.title} - 会议纪要\n\n`
-  md += `> 本文件由 AI 会议复盘工具自动生成\n\n`
+  let md = `# ${meeting.title} - ${mode === 'client' ? '对外会议纪要' : '会议纪要'}\n\n`
+  md += `> 本文件由 AI 会议复盘工具自动生成${mode === 'client' ? '（客户版本，已隐藏内部敏感信息）' : ''}\n\n`
   md += `| 项目 | 内容 |\n| --- | --- |\n`
   md += `| **会议时间** | ${meeting.date} |\n`
   md += `| **参会人员** | ${meeting.speakers.map(s => s.name + (s.role ? `（${s.role}）` : '')).join('、')} |\n`
-  md += `| **媒体文件** | ${meeting.mediaFile?.name || '无'} |\n`
   md += `| **会议时长** | ${formatDuration(meeting.transcripts.length > 0 ? meeting.transcripts[meeting.transcripts.length - 1].endTime : 0)} |\n`
-  md += `| **综合评分** | ${meeting.score.overall}/100（${level}） |\n\n`
-  md += `---\n\n`
+  if (mode === 'team') {
+    md += `| **媒体文件** | ${meeting.mediaFile?.name || '无'} |\n`
+    md += `| **综合评分** | ${meeting.score.overall}/100（${level}） |\n`
+  }
+  md += `\n---\n\n`
 
   md += `## 一、会议概述\n\n`
   md += `${meeting.description || '（无描述）'}\n\n`
@@ -58,17 +62,19 @@ function generateMinutesMarkdown(meeting: Meeting): string {
     md += '\n'
   }
 
-  md += `## 六、会议评分报告\n\n`
-  md += `### 综合评分：${meeting.score.overall}/100 —— ${level}\n\n`
-  md += `| 评分维度 | 得分 | 权重 | 评语 |\n| --- | --- | --- | --- |\n`
-  meeting.score.items.forEach(item => {
-    md += `| ${item.name} | ${item.score}/${item.maxScore} | ${(item.weight * 100).toFixed(0)}% | ${item.comment || '-'} |\n`
-  })
-  md += '\n'
+  if (mode === 'team') {
+    md += `## 六、会议评分报告\n\n`
+    md += `### 综合评分：${meeting.score.overall}/100 —— ${level}\n\n`
+    md += `| 评分维度 | 得分 | 权重 | 评语 |\n| --- | --- | --- | --- |\n`
+    meeting.score.items.forEach(item => {
+      md += `| ${item.name} | ${item.score}/${item.maxScore} | ${(item.weight * 100).toFixed(0)}% | ${item.comment || '-'} |\n`
+    })
+    md += '\n'
 
-  if (meeting.manualReview && meeting.manualReview.trim()) {
-    md += `## 七、人工点评\n\n`
-    md += `${meeting.manualReview}\n\n`
+    if (meeting.manualReview && meeting.manualReview.trim()) {
+      md += `## 七、人工点评\n\n`
+      md += `${meeting.manualReview}\n\n`
+    }
   }
 
   return md
@@ -96,26 +102,33 @@ function generateTranscriptText(meeting: Meeting): string {
   return txt
 }
 
-function generateScoreReportMarkdown(meeting: Meeting): string {
+function generateScoreReportMarkdown(meeting: Meeting, mode: DeliveryMode = 'team'): string {
   const { level, desc } = getScoreLevel(meeting.score.overall)
-  let md = `# ${meeting.title} - 评分报告\n\n`
-  md += `## 综合评价\n\n`
+  let md = `# ${meeting.title} - ${mode === 'client' ? '会议成效摘要' : '评分报告'}\n\n`
+  md += `## ${mode === 'client' ? '整体成效' : '综合评价'}\n\n`
   md += `| 项目 | 内容 |\n| --- | --- |\n`
-  md += `| **综合评分** | **${meeting.score.overall}/100** |\n`
-  md += `| **评级** | ${level} |\n`
-  md += `| **评价** | ${desc} |\n\n`
+  if (mode === 'team') {
+    md += `| **综合评分** | **${meeting.score.overall}/100** |\n`
+    md += `| **评级** | ${level} |\n`
+    md += `| **评价** | ${desc} |\n\n`
+  } else {
+    md += `| **会议成效** | ${level} |\n`
+    md += `| **说明** | ${desc} |\n\n`
+  }
 
-  md += `## 分项评分详情\n\n`
-  meeting.score.items.forEach(item => {
-    const pct = (item.score / item.maxScore) * 100
-    const bar = '█'.repeat(Math.round(pct / 5)) + '░'.repeat(20 - Math.round(pct / 5))
-    md += `### ${item.name}（权重 ${(item.weight * 100).toFixed(0)}%）\n\n`
-    md += `\`${bar}\` **${item.score}/${item.maxScore}**（${pct.toFixed(0)}%）\n\n`
-    if (item.comment) md += `> 💡 ${item.comment}\n\n`
-  })
+  if (mode === 'team') {
+    md += `## 分项评分详情\n\n`
+    meeting.score.items.forEach(item => {
+      const pct = (item.score / item.maxScore) * 100
+      const bar = '█'.repeat(Math.round(pct / 5)) + '░'.repeat(20 - Math.round(pct / 5))
+      md += `### ${item.name}（权重 ${(item.weight * 100).toFixed(0)}%）\n\n`
+      md += `\`${bar}\` **${item.score}/${item.maxScore}**（${pct.toFixed(0)}%）\n\n`
+      if (item.comment) md += `> 💡 ${item.comment}\n\n`
+    })
 
-  if (meeting.manualReview) {
-    md += `## 人工点评\n\n${meeting.manualReview}\n\n`
+    if (meeting.manualReview) {
+      md += `## 人工点评\n\n${meeting.manualReview}\n\n`
+    }
   }
 
   return md
@@ -192,33 +205,37 @@ export interface ExportOptions {
   clips: boolean
   favoriteClipsOnly: boolean
   selectedClipIds?: string[]
+  deliveryMode?: DeliveryMode
 }
 
 export async function buildExportZip(
   meeting: Meeting,
   options: ExportOptions
 ): Promise<ArrayBuffer> {
+  const mode: DeliveryMode = options.deliveryMode || 'team'
   const zip = new JSZip()
-  const baseName = meeting.title.replace(/[\\/:*?"<>|]/g, '_') || '会议资料'
+  const baseName = (meeting.title.replace(/[\\/:*?"<>|]/g, '_') || '会议资料')
+    + (mode === 'client' ? '-客户版' : '-团队版')
   const folder = zip.folder(baseName) || zip
 
   if (options.minutes) {
-    folder.file('1-会议纪要.md', generateMinutesMarkdown(meeting))
+    folder.file(mode === 'client' ? '1-会议纪要.md' : '1-会议纪要.md', generateMinutesMarkdown(meeting, mode))
   }
   if (options.score) {
-    folder.file('2-评分报告.md', generateScoreReportMarkdown(meeting))
+    folder.file(mode === 'client' ? '2-会议成效摘要.md' : '2-评分报告.md', generateScoreReportMarkdown(meeting, mode))
   }
-  if (options.transcript) {
+  if (options.transcript && mode === 'team') {
     folder.file('3-完整转写.txt', generateTranscriptText(meeting))
   }
   if (options.followUps) {
-    folder.file('4-跟进清单.csv', generateFollowUpsCSV(meeting))
+    folder.file(mode === 'client' ? '3-跟进清单.csv' : '4-跟进清单.csv', generateFollowUpsCSV(meeting))
   }
   if (options.clips) {
-    const sub = folder.folder('5-素材片段') || folder
+    const clipsFolderName = mode === 'client' ? '4-沟通片段' : '5-素材片段'
+    const sub = folder.folder(clipsFolderName) || folder
     const clips = getFilteredClips(meeting, options)
-    sub.file('素材索引.md', generateClipsIndexMarkdown(meeting, options))
-    sub.file('素材文本内容.txt', generateClipTranscriptText(meeting, options))
+    sub.file(clipsFolderName + '索引.md', generateClipsIndexMarkdown(meeting, options))
+    sub.file(clipsFolderName + '文本内容.txt', generateClipTranscriptText(meeting, options))
     clips.forEach((c, idx) => {
       const timeStr = formatTimeForFilename(c.startTime)
       const safeName = c.name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 30)
@@ -227,24 +244,39 @@ export async function buildExportZip(
       content += `| 项目 | 内容 |\n| --- | --- |\n`
       content += `| **时间位置** | ${formatTimeRange(c.startTime, c.endTime)}（${formatDuration(c.endTime - c.startTime)}） |\n`
       content += `| **标签** | ${c.tags.join('、') || '无'} |\n`
-      content += `| **创建时间** | ${c.createdAt} |\n\n`
-      content += `---\n\n`
+      if (mode === 'team') {
+        content += `| **创建时间** | ${c.createdAt} |\n`
+      }
+      content += `\n---\n\n`
       content += `## 片段内容\n\n${c.transcript}\n`
       sub.file(filename, content)
     })
   }
 
-  folder.file('README.txt', `AI 会议复盘工具 - 资料导出包
-生成时间：${new Date().toLocaleString('zh-CN')}
-会议主题：${meeting.title}
-会议时间：${meeting.date}
+  const readmeMode = mode === 'client'
+    ? `本资料包为【客户版本】，已隐藏内部评分与人工点评等敏感信息。
+
+文件说明：
+- 1-会议纪要.md：Markdown 格式的对外会议纪要
+- 2-会议成效摘要.md：会议整体成效概览
+- 3-跟进清单.csv：双方约定的跟进事项（Excel 可打开）
+- 4-沟通片段/：约定分享的重点沟通片段索引与文本`
+    : `本资料包为【团队内部版本】，包含完整的会议信息。
 
 文件说明：
 - 1-会议纪要.md：Markdown 格式的完整会议纪要
 - 2-评分报告.md：多维度评分报告，含图表和评语
 - 3-完整转写.txt：逐句转写文本（含发言人、时间戳、打断/沉默标记）
 - 4-跟进清单.csv：Excel 可打开的跟进事项清单
-- 5-素材片段/：收藏的精彩片段索引与文本
+- 5-素材片段/：收藏的精彩片段索引与文本`
+
+  folder.file('README.txt', `AI 会议复盘工具 - 资料导出包
+生成时间：${new Date().toLocaleString('zh-CN')}
+会议主题：${meeting.title}
+会议时间：${meeting.date}
+交付版本：${mode === 'client' ? '客户版' : '团队内部版'}
+
+${readmeMode}
 `)
 
   const blob = await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } })

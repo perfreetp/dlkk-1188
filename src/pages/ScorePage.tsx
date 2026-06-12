@@ -42,28 +42,24 @@ function ScorePage() {
 
   const compareMeetings: Meeting[] = useMemo(() => {
     const list: Meeting[] = []
-    if (compareMeetingIds.size === 0) {
-      const currentIdx = allHistoryMeetings.findIndex(m => m.id === meeting.id)
-      const withoutCurrent = allHistoryMeetings.filter(m => m.id !== meeting.id)
-      const recentOthers = withoutCurrent.slice(Math.max(0, withoutCurrent.length - 2))
-      list.push(...recentOthers)
-      if (currentIdx >= 0 || !list.find(m => m.id === meeting.id)) {
-        list.push(meeting)
-      }
-    } else {
+    if (compareMeetingIds.size > 0) {
       allHistoryMeetings.forEach(m => {
         if (compareMeetingIds.has(m.id)) list.push(m)
       })
-      if (!list.find(m => m.id === meeting.id)) list.push(meeting)
+      if (compareMeetingIds.has(meeting.id) && !list.find(m => m.id === meeting.id)) {
+        list.push(meeting)
+      }
     }
     return list.sort((a, b) => (a.date || '').localeCompare(b.date || ''))
   }, [meeting, allHistoryMeetings, compareMeetingIds])
 
-  const bestScore = Math.max(...compareMeetings.map(d => d.score?.overall || 0))
+  const bestScore = compareMeetings.length > 0
+    ? Math.max(...compareMeetings.map(d => d.score?.overall || 0))
+    : meeting.score.overall
   const avgScore = compareMeetings.length > 0
     ? Math.round(compareMeetings.reduce((s, d) => s + (d.score?.overall || 0), 0) / compareMeetings.length)
-    : 0
-  const isBest = meeting.score.overall >= bestScore && compareMeetings.length > 1
+    : meeting.score.overall
+  const isBest = compareMeetings.length > 1 && meeting.score.overall >= bestScore
 
   const objectiveProgress = objectiveState.filter(Boolean).length
 
@@ -232,60 +228,76 @@ function ScorePage() {
         </div>
       </div>
 
-      {showHistorySelector && allHistoryMeetings.length > 0 && (
+      {showHistorySelector && (
         <div className="card" style={{ marginTop: 16, marginBottom: 20 }}>
           <div className="card-header" style={{ marginBottom: 12 }}>
-            <h2 className="card-title">🕒 选择要查看/对比的会议（共 {allHistoryMeetings.length} 个）</h2>
-            <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
-              💡 点击卡片切换当前会议，☑️ 勾选可用于多会议对比（最多选 3 场），当前已选 {compareMeetingIds.size} 场
+            <h2 className="card-title">🕒 选择要对比的会议（共 {allHistoryMeetings.length + 1} 个）</h2>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 4, lineHeight: 1.7 }}>
+              💡 点击非当前卡片可切换会议；<strong>☑️ 勾选</strong>可加入对比（最多 3 场）。
+              当前会议也需要<strong className="text-primary">主动勾选</strong>才会参与对比。
+              已选 <span style={{ color: '#6366f1', fontWeight: 600 }}>{compareMeetingIds.size}</span> 场
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 10 }}>
-            {allHistoryMeetings.map(m => {
-              const isCurrent = m.id === meeting.id
-              const isSelected = compareMeetingIds.has(m.id)
-              return (
-                <div
-                  key={m.id}
-                  onClick={() => {
-                    if (!isCurrent) switchToMeeting(m.id)
-                  }}
-                  style={{
-                    padding: 12, borderRadius: 8, cursor: 'pointer',
-                    border: isCurrent ? '2px solid #6366f1' : isSelected ? '2px solid #8b5cf6' : '1px solid #e2e8f0',
-                    background: isCurrent ? '#eef2ff' : isSelected ? '#f5f3ff' : '#fff',
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={(e) => {
-                          e.stopPropagation()
-                          toggleCompareMeeting(m.id)
-                        }}
-                        style={{ width: 16, height: 16 }}
-                      />
-                      <div style={{ fontWeight: 600, fontSize: 14, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={m.title}>
-                        {m.title || '未命名会议'}
+            {(() => {
+              const currentIsInHistory = allHistoryMeetings.some(m => m.id === meeting.id)
+              const listToRender: Meeting[] = []
+              if (!currentIsInHistory) listToRender.push(meeting)
+              listToRender.push(...allHistoryMeetings)
+              return listToRender.map(m => {
+                const isCurrent = m.id === meeting.id
+                const isSelected = compareMeetingIds.has(m.id)
+                return (
+                  <div
+                    key={m.id}
+                    onClick={() => {
+                      if (!isCurrent) switchToMeeting(m.id)
+                    }}
+                    style={{
+                      padding: 12, borderRadius: 8, cursor: isCurrent ? 'default' : 'pointer',
+                      border: isCurrent ? '2px solid #6366f1' : isSelected ? '2px solid #8b5cf6' : '1px solid #e2e8f0',
+                      background: isCurrent ? 'linear-gradient(135deg,#eef2ff,#f5f3ff)' : isSelected ? '#f5f3ff' : '#fff',
+                      transition: 'all 0.2s', position: 'relative'
+                    }}
+                  >
+                    {isCurrent && !currentIsInHistory && (
+                      <div style={{ position: 'absolute', top: -8, right: 8, padding: '2px 8px', fontSize: 11, background: '#6366f1', color: '#fff', borderRadius: 8 }}>
+                        当前会议（未保存）
                       </div>
+                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={(e) => {
+                            e.stopPropagation()
+                            toggleCompareMeeting(m.id)
+                          }}
+                          style={{ width: 16, height: 16 }}
+                        />
+                        <div style={{ fontWeight: 600, fontSize: 14, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={m.title}>
+                          {m.title || '未命名会议'}
+                        </div>
+                      </div>
+                      {isCurrent && currentIsInHistory && <span className="tag tag-primary" style={{ marginLeft: 6, fontSize: 11 }}>当前</span>}
                     </div>
-                    {isCurrent && <span className="tag tag-primary" style={{ marginLeft: 6, fontSize: 11 }}>当前</span>}
+                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>{m.date}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
+                      <span style={{ color: '#6366f1', fontWeight: 600 }}>{m.score?.overall || 0} 分</span>
+                      <span style={{ color: '#94a3b8' }}>{formatDuration(m.transcripts?.length > 0 ? m.transcripts[m.transcripts.length - 1].endTime : 0)}</span>
+                      <span style={{ color: '#94a3b8' }}>{m.topics?.length || 0} 议题</span>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>{m.date}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
-                    <span style={{ color: '#6366f1', fontWeight: 600 }}>{m.score?.overall || 0} 分</span>
-                    <span style={{ color: '#94a3b8' }}>{formatDuration(m.transcripts?.length > 0 ? m.transcripts[m.transcripts.length - 1].endTime : 0)}</span>
-                    <span style={{ color: '#94a3b8' }}>{m.topics?.length || 0} 议题</span>
-                  </div>
-                </div>
-              )
-            })}
+                )
+              })
+            })()}
           </div>
           {compareMeetingIds.size > 0 && (
-            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e2e8f0', textAlign: 'right' }}>
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <div style={{ fontSize: 12, color: '#64748b' }}>
+                📌 已勾选 {compareMeetingIds.size} 场，下方对比面板将<strong>只展示这些会议</strong>
+              </div>
               <button className="btn btn-outline btn-sm" onClick={() => setCompareMeetingIds(new Set())}>
                 清空对比选择
               </button>
